@@ -215,7 +215,6 @@ hr{border:none;border-top:1px solid #f2ece6;margin:28px 0;}
 
 export default function App() {
   const [screen, setScreen] = useState("landing");
-  const [analysisType, setAnalysisType] = useState("detailed");
   const [capturedImage, setCapturedImage] = useState(null);
   const [patient, setPatient] = useState({ name: "", age: "", phone: "", city: "Mumbai", state: "Maharashtra" });
   const [results, setResults] = useState(null);
@@ -589,7 +588,7 @@ export default function App() {
               { type: "quick", icon: "⚡", title: "Quick Analysis", desc: "Get instant diagnostic approximations from your photo." },
               { type: "detailed", icon: "📋", title: "Detailed Consultation", desc: "Answer specific dermal inquiries for a highly precise biological index.", rec: true },
             ].map(o => (
-              <div key={o.type} className="opt-card" onClick={() => { setAnalysisType(o.type); setScreen("tips"); }}
+              <div key={o.type} className="opt-card" onClick={() => setScreen("tips")}
                 style={{ 
                   border: o.rec ? `1px solid ${GOLD}` : "1px solid rgba(89, 19, 33, 0.08)", 
                   borderRadius: 20, 
@@ -749,10 +748,10 @@ export default function App() {
           </div>
         </div>
         {[
-          { icon: "📷", t: "Access Video Camera", d: "Utilize webcam/camera for high-res direct capture.", action: startCamera },
-          { icon: "☁️", t: "Upload Local Image", d: "Load high-res image from system files.", action: () => fileRef2.current?.click() },
+          { icon: "📷", t: "Access Video Camera", d: "Utilize webcam/camera for high-res direct capture.", type: "camera" },
+          { icon: "☁️", t: "Upload Local Image", d: "Load high-res image from system files.", type: "upload" },
         ].map(o => (
-          <div key={o.t} className="cap-opt" onClick={o.action}
+          <div key={o.t} className="cap-opt" onClick={o.type === "camera" ? startCamera : () => fileRef2.current?.click()}
             style={{ 
               background: "white", 
               borderRadius: 20, 
@@ -865,7 +864,6 @@ export default function App() {
           top: "50%", 
           left: "50%", 
           transform: "translate(-50%, -50%)", 
-          color: "white", 
           fontSize: 110, 
           fontWeight: 300, 
           fontFamily: "'Playfair Display', serif",
