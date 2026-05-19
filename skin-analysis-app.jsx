@@ -217,6 +217,7 @@ export default function App() {
   const [countdown, setCountdown] = useState(null);
   const [activeTab, setActiveTab] = useState("results");
   const [camError, setCamError] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
   const videoRef = useRef(null);
   const overlayRef = useRef(null);
@@ -224,6 +225,12 @@ export default function App() {
   const animRef = useRef(null);
   const fileRef = useRef(null);
   const fileRef2 = useRef(null);
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -243,13 +250,19 @@ export default function App() {
       ctx.fillRect(0, 0, w, h);
       ctx.globalCompositeOperation = "destination-out";
       ctx.beginPath();
-      ctx.ellipse(w / 2, h * 0.44, w * 0.27, h * 0.37, 0, 0, Math.PI * 2);
+
+      // Responsive head oval geometry matching face ratio
+      const base = Math.min(w, h);
+      const rx = base * 0.28;
+      const ry = rx * 1.35;
+      ctx.ellipse(w / 2, h * 0.44, rx, ry, 0, 0, Math.PI * 2);
+
       ctx.fill();
       ctx.globalCompositeOperation = "source-over";
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.ellipse(w / 2, h * 0.44, w * 0.27, h * 0.37, 0, 0, Math.PI * 2);
+      ctx.ellipse(w / 2, h * 0.44, rx, ry, 0, 0, Math.PI * 2);
       ctx.stroke();
       animRef.current = requestAnimationFrame(draw);
     };
@@ -337,7 +350,7 @@ export default function App() {
 
   // ═══ LANDING ═══
   if (screen === "landing" || screen === "choose") return (
-    <div style={{ display: "flex", minHeight: "100vh", ...s }}>
+    <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: "100vh", ...s }}>
       <style>{`
         @keyframes fadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:none} }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
@@ -347,18 +360,53 @@ export default function App() {
       `}</style>
 
       {/* Left maroon panel */}
-      <div style={{ width: 340, background: MAROON, padding: "52px 40px", display: "flex", flexDirection: "column", justifyContent: "space-between", flexShrink: 0 }}>
+      <div style={{ 
+        width: isMobile ? "100%" : 340, 
+        background: MAROON, 
+        padding: isMobile ? "36px 24px" : "52px 40px", 
+        display: "flex", 
+        flexDirection: "column", 
+        justifyContent: "space-between", 
+        flexShrink: 0,
+        boxSizing: "border-box"
+      }}>
         <div style={{ color: "white" }}>
-          <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, marginBottom: 48 }}>🔬</div>
-          <div style={{ fontSize: 32, fontWeight: 700, lineHeight: 1.3, marginBottom: 16 }}>Advanced AI<br/>Skin Analysis</div>
+          <div style={{ 
+            width: 44, 
+            height: 44, 
+            borderRadius: "50%", 
+            background: "rgba(255,255,255,0.15)", 
+            display: "flex", 
+            alignItems: "center", 
+            justifyContent: "center", 
+            fontSize: 20, 
+            marginBottom: isMobile ? 24 : 48 
+          }}>🔬</div>
+          <div style={{ fontSize: isMobile ? 26 : 32, fontWeight: 700, lineHeight: 1.3, marginBottom: 16 }}>Advanced AI<br/>Skin Analysis</div>
           <div style={{ fontSize: 14, opacity: 0.72, lineHeight: 1.8 }}>Welcome to the digital consultation portal for {DOC.clinic}.</div>
         </div>
-        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11 }}>Powered by AI · Completely Private</div>
+        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: isMobile ? 24 : 0 }}>Powered by AI · Completely Private</div>
       </div>
 
       {/* Right panel */}
-      <div style={{ flex: 1, background: "#fdf2f4", display: "flex", alignItems: "center", justifyContent: "center", padding: 32 }}>
-        <div style={{ background: "white", borderRadius: 24, padding: "40px 36px", width: "100%", maxWidth: 460, animation: "fadeUp 0.5s ease" }}>
+      <div style={{ 
+        flex: 1, 
+        background: "#fdf2f4", 
+        display: "flex", 
+        alignItems: "center", 
+        justifyContent: "center", 
+        padding: isMobile ? 16 : 32,
+        boxSizing: "border-box"
+      }}>
+        <div style={{ 
+          background: "white", 
+          borderRadius: 24, 
+          padding: isMobile ? "32px 20px" : "40px 36px", 
+          width: "100%", 
+          maxWidth: 460, 
+          animation: "fadeUp 0.5s ease",
+          boxSizing: "border-box"
+        }}>
           {/* Doctor card */}
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <div style={{ width: 96, height: 96, borderRadius: "50%", background: MAROON, color: "white", fontSize: 30, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}>PT</div>
@@ -372,16 +420,18 @@ export default function App() {
               <div style={{ fontSize: 17, fontWeight: 700, color: "#111", marginBottom: 6 }}>Begin Your Personalised Consultation</div>
               <div style={{ fontSize: 12, color: "#888", lineHeight: 1.7 }}>In three simple steps, our AI will analyze your skin and generate a personalized preliminary report.</div>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-around", marginBottom: 28 }}>
+            <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 16 : 0, justifyContent: "space-around", marginBottom: 28 }}>
               {[
-                { icon: "📷", t: "1. Snap Photo", d: "Capture a clear photo of the skin area." },
-                { icon: "🤖", t: "2. AI Analysis", d: "Our system analyzes the image instantly." },
-                { icon: "📄", t: "3. Get Report", d: "Receive a detailed report for the doctor." },
+                { icon: "📷", t: "1. Snap Photo", d: "Capture a clear photo." },
+                { icon: "🤖", t: "2. AI Analysis", d: "Scan the image instantly." },
+                { icon: "📄", t: "3. Get Report", d: "Receive a detailed report." },
               ].map(x => (
-                <div key={x.t} style={{ textAlign: "center", flex: 1, padding: "0 6px" }}>
-                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#fde8ed", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 8px", fontSize: 20 }}>{x.icon}</div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#111", marginBottom: 3 }}>{x.t}</div>
-                  <div style={{ fontSize: 10, color: "#aaa", lineHeight: 1.5 }}>{x.d}</div>
+                <div key={x.t} style={{ textAlign: "center", flex: 1, padding: "0 6px", display: isMobile ? "flex" : "block", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#fde8ed", display: "flex", alignItems: "center", justifyContent: "center", margin: isMobile ? "0" : "0 auto 8px", fontSize: 20, flexShrink: 0 }}>{x.icon}</div>
+                  <div style={{ textAlign: isMobile ? "left" : "center" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#111", marginBottom: 3 }}>{x.t}</div>
+                    <div style={{ fontSize: 10, color: "#aaa", lineHeight: 1.5 }}>{x.d}</div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -673,110 +723,144 @@ export default function App() {
           <div style={{ background: sevBg, color: sevColor, padding: "4px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{results.severityIndex}</div>
         </div>
 
-        <div style={{ maxWidth: 480, margin: "0 auto", padding: "16px 16px" }}>
-          {/* Photos */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-            <img src={capturedImage} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 14, display: "block" }} alt="Patient" />
-            <div style={{ background: "#e8eeff", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", aspectRatio: "1", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 28 }}>🤖</span>
-              <div style={{ fontSize: 11, color: "#7c9fd4", textAlign: "center", lineHeight: 1.4 }}>AI Analysis<br/>View</div>
+        <div style={{ 
+          maxWidth: isMobile ? 480 : 1024, 
+          margin: "0 auto", 
+          padding: isMobile ? "16px 16px" : "32px 24px",
+          display: "grid",
+          gridTemplateColumns: isMobile ? "1fr" : "1.1fr 1.3fr",
+          gap: isMobile ? 0 : 24,
+          alignItems: "start",
+          boxSizing: "border-box"
+        }}>
+          {/* Left Column (Sticky on Desktop) */}
+          <div style={{ position: isMobile ? "static" : "sticky", top: 88, marginBottom: isMobile ? 14 : 0 }}>
+            {/* Photos */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+              <img src={capturedImage} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 14, display: "block" }} alt="Patient" />
+              <div style={{ background: "#e8eeff", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", aspectRatio: "1", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 28 }}>🤖</span>
+                <div style={{ fontSize: 11, color: "#7c9fd4", textAlign: "center", lineHeight: 1.4 }}>AI Analysis<br/>View</div>
+              </div>
+            </div>
+
+            {/* Primary Concern */}
+            <div style={{ background: "#fff5f5", border: "1px solid #fecaca", borderRadius: 18, padding: 18 }}>
+              <div style={{ fontSize: 10, color: "#f97316", letterSpacing: 1, fontWeight: 700, marginBottom: 6 }}>PRIMARY CONCERN</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: "#111" }}>{primary?.name}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#dc2626" }}>{primary?.percentage}%</div>
+              </div>
+              <div style={{ fontSize: 13, color: "#666", lineHeight: 1.6 }}>{primary?.description}</div>
             </div>
           </div>
 
-          {/* Primary Concern */}
-          <div style={{ background: "#fff5f5", border: "1px solid #fecaca", borderRadius: 18, padding: 18, marginBottom: 14 }}>
-            <div style={{ fontSize: 10, color: "#f97316", letterSpacing: 1, fontWeight: 700, marginBottom: 6 }}>PRIMARY CONCERN</div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#111" }}>{primary?.name}</div>
-              <div style={{ fontSize: 24, fontWeight: 800, color: "#dc2626" }}>{primary?.percentage}%</div>
-            </div>
-            <div style={{ fontSize: 13, color: "#666", lineHeight: 1.6 }}>{primary?.description}</div>
-          </div>
-
-          {/* Tabs */}
-          <div style={{ display: "flex", background: "#efefef", borderRadius: 14, padding: 4, marginBottom: 14 }}>
-            {["results", "routine", "info"].map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)}
-                style={{ flex: 1, padding: "10px", border: "none", borderRadius: 11, cursor: "pointer", fontSize: 13, fontWeight: 600, background: activeTab === tab ? "#2563eb" : "transparent", color: activeTab === tab ? "white" : "#777", transition: "all 0.2s" }}>
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          {/* Results Tab */}
-          {activeTab === "results" && (
-            <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
-              {results.conditions.map((c, i) => (
-                <div key={c.name} style={{ marginBottom: i < results.conditions.length - 1 ? 18 : 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{c.name}</span>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: barColor(c.percentage) }}>{c.percentage}%</span>
-                  </div>
-                  <div style={{ background: "#f0f0f0", borderRadius: 10, height: 7 }}>
-                    <div style={{ background: barColor(c.percentage), height: 7, borderRadius: 10, width: `${c.percentage}%`, transition: "width 1s ease " + i * 0.1 + "s" }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: "#aaa", marginTop: 3 }}>{c.severity}</div>
-                </div>
+          {/* Right Column (Scrollable details) */}
+          <div>
+            {/* Tabs */}
+            <div style={{ display: "flex", background: "#efefef", borderRadius: 14, padding: 4, marginBottom: 14 }}>
+              {["results", "routine", "info"].map(tab => (
+                <button key={tab} onClick={() => setActiveTab(tab)}
+                  style={{ flex: 1, padding: "10px", border: "none", borderRadius: 11, cursor: "pointer", fontSize: 13, fontWeight: 600, background: activeTab === tab ? "#2563eb" : "transparent", color: activeTab === tab ? "white" : "#777", transition: "all 0.2s" }}>
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
               ))}
             </div>
-          )}
 
-          {/* Routine Tab */}
-          {activeTab === "routine" && (
-            <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
-              <div style={{ marginBottom: 22 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#f97316", marginBottom: 14 }}>☀️ Morning Routine</div>
-                {results.morningRoutine.map((step, i) => (
-                  <div key={i} style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
-                    <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#fff3e0", color: "#f97316", fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
-                    <div style={{ fontSize: 13, color: "#444", lineHeight: 1.6, paddingTop: 4 }}>{step}</div>
+            {/* Results Tab */}
+            {activeTab === "results" && (
+              <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
+                {results.conditions.map((c, i) => (
+                  <div key={c.name} style={{ marginBottom: i < results.conditions.length - 1 ? 18 : 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{c.name}</span>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: barColor(c.percentage) }}>{c.percentage}%</span>
+                    </div>
+                    <div style={{ background: "#f0f0f0", borderRadius: 10, height: 7 }}>
+                      <div style={{ background: barColor(c.percentage), height: 7, borderRadius: 10, width: `${c.percentage}%`, transition: "width 1s ease " + i * 0.1 + "s" }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: "#aaa", marginTop: 3 }}>{c.severity}</div>
                   </div>
                 ))}
               </div>
-              <div style={{ borderTop: "1px solid #f5f5f5", paddingTop: 20 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 14 }}>🌙 Evening Routine</div>
-                {results.eveningRoutine.map((step, i) => (
-                  <div key={i} style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
-                    <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#f3e8ff", color: "#7c3aed", fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
-                    <div style={{ fontSize: 13, color: "#444", lineHeight: 1.6, paddingTop: 4 }}>{step}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
 
-          {/* Info Tab */}
-          {activeTab === "info" && (
-            <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 10, color: "#aaa", letterSpacing: 1.5, fontWeight: 600, marginBottom: 10 }}>PHYSICIAN SUMMARY</div>
-                <div style={{ fontSize: 13, color: "#333", lineHeight: 1.9, fontStyle: "italic" }}>"{results.physicianSummary}"</div>
-              </div>
-              <div style={{ background: "#f8f9fa", borderRadius: 12, padding: 16 }}>
-                <div style={{ fontSize: 10, color: "#aaa", letterSpacing: 1.5, fontWeight: 600, marginBottom: 10 }}>FOLLOW-UP ADVICE</div>
-                <div style={{ fontSize: 13, color: "#555", lineHeight: 1.8 }}>{results.followUpAdvice}</div>
-              </div>
-              <div style={{ marginTop: 16, padding: 14, background: "#fdf2f4", borderRadius: 12, display: "flex", gap: 10, alignItems: "center" }}>
-                <span style={{ fontSize: 20 }}>👨‍⚕️</span>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: MAROON }}>{DOC.name}</div>
-                  <div style={{ fontSize: 11, color: "#aaa" }}>{DOC.clinic} · {DOC.city}</div>
+            {/* Routine Tab */}
+            {activeTab === "routine" && (
+              <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
+                <div style={{ marginBottom: 22 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#f97316", marginBottom: 14 }}>☀️ Morning Routine</div>
+                  {results.morningRoutine.map((step, i) => (
+                    <div key={i} style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
+                      <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#fff3e0", color: "#f97316", fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ fontSize: 13, color: "#444", lineHeight: 1.6, paddingTop: 4 }}>{step}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ borderTop: "1px solid #f5f5f5", paddingTop: 20 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed", marginBottom: 14 }}>🌙 Evening Routine</div>
+                  {results.eveningRoutine.map((step, i) => (
+                    <div key={i} style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
+                      <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#f3e8ff", color: "#7c3aed", fontWeight: 700, fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ fontSize: 13, color: "#444", lineHeight: 1.6, paddingTop: 4 }}>{step}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </div>
-          )}
+            )}
+
+            {/* Info Tab */}
+            {activeTab === "info" && (
+              <div style={{ background: "white", borderRadius: 18, padding: 20, border: "1px solid #eee", animation: "fadeUp 0.2s ease" }}>
+                <div style={{ marginBottom: 18 }}>
+                  <div style={{ fontSize: 10, color: "#aaa", letterSpacing: 1.5, fontWeight: 600, marginBottom: 10 }}>PHYSICIAN SUMMARY</div>
+                  <div style={{ fontSize: 13, color: "#333", lineHeight: 1.9, fontStyle: "italic" }}>"{results.physicianSummary}"</div>
+                </div>
+                <div style={{ background: "#f8f9fa", borderRadius: 12, padding: 16 }}>
+                  <div style={{ fontSize: 10, color: "#aaa", letterSpacing: 1.5, fontWeight: 600, marginBottom: 10 }}>FOLLOW-UP ADVICE</div>
+                  <div style={{ fontSize: 13, color: "#555", lineHeight: 1.8 }}>{results.followUpAdvice}</div>
+                </div>
+                <div style={{ marginTop: 16, padding: 14, background: "#fdf2f4", borderRadius: 12, display: "flex", gap: 10, alignItems: "center" }}>
+                  <span style={{ fontSize: 20 }}>👨‍⚕️</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: MAROON }}>{DOC.name}</div>
+                    <div style={{ fontSize: 11, color: "#aaa" }}>{DOC.clinic} · {DOC.city}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Bottom CTA */}
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "white", padding: "12px 20px", borderTop: "1px solid #eee", display: "flex", gap: 10 }}>
-          <button onClick={() => openPDFReport(patient, results, capturedImage)}
-            style={{ flex: 1, background: "#2563eb", color: "white", border: "none", borderRadius: 14, padding: 14, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            📥 Download PDF
-          </button>
-          <button onClick={() => window.open(`https://wa.me/${DOC.wa}?text=Hi%20${encodeURIComponent(DOC.name)}%2C%20I%20just%20completed%20my%20AI%20skin%20analysis.%20Primary%20concern%3A%20${encodeURIComponent(results.primaryConcern)}%20(${encodeURIComponent(results.severityIndex)}%20severity).%20I%20would%20like%20to%20book%20a%20consultation.`, "_blank")}
-            style={{ flex: 1, background: "#111", color: "white", border: "none", borderRadius: 14, padding: 14, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            💬 Book via WhatsApp
-          </button>
+        <div style={{ 
+          position: "fixed", 
+          bottom: 0, 
+          left: 0, 
+          right: 0, 
+          background: "white", 
+          padding: "12px 20px", 
+          borderTop: "1px solid #eee", 
+          display: "flex", 
+          gap: 10,
+          zIndex: 100 
+        }}>
+          <div style={{ 
+            width: "100%", 
+            maxWidth: isMobile ? "100%" : 768, 
+            margin: "0 auto", 
+            display: "flex", 
+            gap: 10 
+          }}>
+            <button onClick={() => openPDFReport(patient, results, capturedImage)}
+              style={{ flex: 1, background: "#2563eb", color: "white", border: "none", borderRadius: 14, padding: 14, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              📥 Download PDF
+            </button>
+            <button onClick={() => window.open(`https://wa.me/${DOC.wa}?text=Hi%20${encodeURIComponent(DOC.name)}%2C%20I%20just%20completed%20my%20AI%20skin%20analysis.%20Primary%20concern%3A%20${encodeURIComponent(results.primaryConcern)}%20(${encodeURIComponent(results.severityIndex)}%20severity).%20I%20would%20like%20to%20book%20a%20consultation.`, "_blank")}
+              style={{ flex: 1, background: "#111", color: "white", border: "none", borderRadius: 14, padding: 14, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              💬 Book via WhatsApp
+            </button>
+          </div>
         </div>
       </div>
     );
