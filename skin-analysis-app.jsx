@@ -31,6 +31,7 @@ const IND_STATES = [
 ];
 
 async function analyzeWithAI(base64, patient) {
+  const apiKey = "AIzaSyAJpi4gSVAh8meYcM0Z0BjDpYtlAexZJ34";
   const prompt = `You are a clinical dermatologist AI. Analyze this skin photo for ${patient.name}, age ${patient.age}. Return ONLY valid JSON with no markdown or explanation:
 {
   "skinType": "oily|dry|combination|normal",
@@ -47,20 +48,28 @@ async function analyzeWithAI(base64, patient) {
 }
 Include 4-6 conditions based on actual visible features. Be clinically accurate.`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: [
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-        { type: "text", text: prompt }
-      ]}]
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: "image/jpeg", data: base64 } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
     })
   });
+
+  if (!res.ok) {
+    throw new Error(`Gemini API error: ${res.statusText}`);
+  }
+
   const data = await res.json();
-  const text = data.content?.find(b => b.type === "text")?.text || "{}";
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
