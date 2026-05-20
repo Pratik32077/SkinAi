@@ -1,12 +1,17 @@
 import { useState, useRef, useEffect } from "react";
+import doctorImage from "./src/assets/4b8b43cf-34a3-43ae-8f2a-b5806910dd9f.jpg";
 
 const DOC = {
-  name: "Dr. Pratik Tiwari",
-  initials: "PT",
-  clinic: "Tiwari Neurologist Brain Clinic",
+  name: "Dr. Ashutosh Konwar",
+  initials: "AK",
+  clinic: "The Derma Clinic",
   city: "Mumbai",
-  phone: "8055208985",
-  wa: "918055208985",
+  phone: "9864253919",
+  wa: "919864253919",
+  email: "ash.kuv@gmail.com",
+  address: "Ajanta Tower, Andheri East, Mumbai",
+  qualification: "MD Dermatologist",
+  about: "The clinic which focuses on your skin, not your money",
 };
 
 const MAROON = "#591321"; // Deep premium maroon
@@ -31,7 +36,7 @@ const IND_STATES = [
 ];
 
 async function analyzeWithAI(base64, patient) {
-  const apiKey = "AIzaSyAJpi4gSVAh8meYcM0Z0BjDpYtlAexZJ34";
+  const apiKey = "AIzaSyCQvgrkDMJ03JGurTT5edzq9PBI8HmFiqU";
   const prompt = `You are a clinical dermatologist AI. Analyze this skin photo for ${patient.name}, age ${patient.age}. Return ONLY valid JSON with no markdown or explanation:
 {
   "skinType": "oily|dry|combination|normal",
@@ -48,9 +53,12 @@ async function analyzeWithAI(base64, patient) {
 }
 Include 4-6 conditions based on actual visible features. Be clinically accurate.`;
 
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-goog-api-key": apiKey
+    },
     body: JSON.stringify({
       contents: [{
         parts: [
@@ -462,23 +470,25 @@ export default function App() {
           {/* Doctor card */}
           <div style={{ textAlign: "center", marginBottom: 28 }}>
             <div style={{ 
-              width: 90, 
-              height: 90, 
+              width: 110, 
+              height: 110, 
               borderRadius: "50%", 
-              background: "linear-gradient(135deg, #4A0E1C 0%, #2D0810 100%)", 
               border: `2px solid ${GOLD}`,
-              color: "white", 
-              fontSize: 28, 
-              fontWeight: 600, 
               display: "flex", 
               alignItems: "center", 
               justifyContent: "center", 
               margin: "0 auto 16px",
-              boxShadow: "0 10px 25px -5px rgba(89, 19, 33, 0.2)"
-            }}>{DOC.initials}</div>
+              boxShadow: "0 10px 25px -5px rgba(89, 19, 33, 0.2)",
+              overflow: "hidden",
+              background: "#FFF"
+            }}>
+              <img src={doctorImage} alt={DOC.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
             <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", ...sSerif }}>{DOC.name}</div>
             <div style={{ color: GOLD, fontWeight: 700, fontSize: 11, letterSpacing: "1.5px", textTransform: "uppercase", marginTop: 6 }}>{DOC.clinic}</div>
-            <div style={{ color: "#8E8585", fontSize: 12, marginTop: 6, fontWeight: 500 }}>📍 {DOC.city}, INDIA</div>
+            <div style={{ color: "#6E6565", fontSize: 12, marginTop: 8, fontWeight: 500 }}>{DOC.qualification}</div>
+            <div style={{ color: "#8E8585", fontSize: 12, marginTop: 6, fontWeight: 500 }}>📍 {DOC.address}</div>
+            <div style={{ color: "#8E8585", fontSize: 12, marginTop: 4, fontWeight: 500 }}>✉ {DOC.email}</div>
           </div>
 
           <div style={{ borderTop: "1px solid #F0ECE7", paddingTop: 28, marginBottom: 28 }}>
@@ -548,7 +558,8 @@ export default function App() {
               {[
                 { label: "📞 Call Clinic", href: `tel:+91${DOC.phone}` },
                 { label: "💬 WhatsApp", href: `https://wa.me/${DOC.wa}` },
-                { label: "📍 Location", href: `https://maps.google.com/?q=${encodeURIComponent(DOC.clinic + " " + DOC.city)}` },
+                { label: "✉ Email", href: `mailto:${DOC.email}` },
+                { label: "📍 Location", href: `https://maps.google.com/?q=${encodeURIComponent(DOC.address)}` },
               ].map(b => (
                 <a key={b.label} className="contact-btn" href={b.href} target="_blank" rel="noreferrer"
                   style={{ 
