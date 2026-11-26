@@ -1,22 +1,11 @@
 import { useState, useRef, useEffect } from "react";
-import doctorImage from "./src/assets/4b8b43cf-34a3-43ae-8f2a-b5806910dd9f.jpg";
-
-const DOC = {
-  name: "Dr. Ashutosh Konwar",
-  initials: "AK",
-  clinic: "The Derma Clinic",
-  city: "Mumbai",
-  phone: "9864253919",
-  wa: "919864253919",
-  email: "ash.kuv@gmail.com",
-  address: "Ajanta Tower, Andheri East, Mumbai",
-  qualification: "MD Dermatologist",
-  about: "The clinic which focuses on your skin, not your money",
-};
+import { CLINIC_PROFILE as DOC, PRODUCT_NAME, PROJECT_CONTACT } from "./src/config/clinic.js";
 
 const MAROON = "#591321"; // Deep premium maroon
 const GOLD = "#C2A278"; // Warm luxury bronze-gold
 const PEARL = "#FAF7F5"; // Rich pearl-cream background
+const MEDICAL_DISCLAIMER = "This report contains AI-generated preliminary skin observations for informational purposes only. It is not a medical diagnosis and does not replace professional medical advice. AI-generated observations may be inaccurate or incomplete. Please consult a qualified dermatologist for proper evaluation and treatment.";
+const ANALYSIS_TIMEOUT_MS = 60_000;
 
 const TIPS = [
   "Always wear sunscreen with at least SPF 30, even on cloudy days.",
@@ -34,213 +23,257 @@ const IND_STATES = [
   "Rajasthan","Sikkim","Tamil Nadu","Telangana","Tripura","Uttar Pradesh",
   "Uttarakhand","West Bengal","Delhi","Other",
 ];
+const OBSERVATION_NAMES = [
+  "Acne and blemishes",
+  "Hyperpigmentation",
+  "Dark circles",
+  "Enlarged pores",
+  "Fine lines",
+];
+const SEVERITY_LEVELS = ["Mild", "Moderate", "Severe"];
 
-async function analyzeWithAI(base64, patient) {
-  const apiKey = "AIzaSyCQvgrkDMJ03JGurTT5edzq9PBI8HmFiqU";
-  const prompt = `You are a clinical dermatologist AI. Analyze this skin photo for ${patient.name}, age ${patient.age}. Return ONLY valid JSON with no markdown or explanation:
-{
-  "skinType": "oily|dry|combination|normal",
-  "primaryConcern": "main skin concern in 2-3 words",
-  "severityIndex": "Low|Moderate|High",
-  "skinAge": "e.g. consistent with age",
-  "conditions": [
-    {"name": "condition name", "severity": "Mild|Moderate|Severe", "percentage": 35, "description": "one sentence clinical description"}
-  ],
-  "physicianSummary": "2-3 sentence clinical summary referencing the patient's age and visible findings",
-  "morningRoutine": ["step 1", "step 2", "step 3", "step 4"],
-  "eveningRoutine": ["step 1", "step 2", "step 3"],
-  "followUpAdvice": "2-3 sentence follow-up recommendation"
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not recorded";
+  return date.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
 }
-Include 4-6 conditions based on actual visible features. Be clinically accurate.`;
 
-  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-goog-api-key": apiKey
-    },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { text: prompt },
-          { inlineData: { mimeType: "image/jpeg", data: base64 } }
-        ]
-      }],
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
-    })
-  });
+function isValidAssessmentResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const isText = (value, limit) =>
+    typeof value === "string" && value.trim().length > 0 && value.length <= limit;
+  const validRoutines = routine =>
+    Array.isArray(routine) &&
+    routine.length > 0 &&
+    routine.length <= 6 &&
+    routine.every(step => isText(step, 300));
+  const conditionNames = Array.isArray(result.conditions)
+    ? result.conditions.map(condition => condition?.name)
+    : [];
 
-  if (!res.ok) {
-    throw new Error(`Gemini API error: ${res.statusText}`);
+  return (
+    ["Oily", "Dry", "Combination", "Normal", "Unable to assess"].includes(result.skinType) &&
+    isText(result.primaryConcern, 120) &&
+    isText(result.summary, 1000) &&
+    conditionNames.length === OBSERVATION_NAMES.length &&
+    new Set(conditionNames).size === OBSERVATION_NAMES.length &&
+    OBSERVATION_NAMES.every(name => conditionNames.includes(name)) &&
+    result.conditions.every(condition =>
+      isText(condition?.description, 500) &&
+      (condition.severity == null || SEVERITY_LEVELS.includes(condition.severity))
+    ) &&
+    validRoutines(result.morningRoutine) &&
+    validRoutines(result.eveningRoutine) &&
+    isText(result.followUpAdvice, 1000)
+  );
+}
+
+async function analyzeWithAI(image) {
+  let response;
+  try {
+    response = await fetch("/api/analyze-skin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image }),
+      signal: AbortSignal.timeout(ANALYSIS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      throw new Error("The assessment request timed out. Please try again.", { cause: error });
+    }
+    throw new Error("Unable to reach the assessment service. Please try again.", { cause: error });
   }
 
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+  let responseBody;
+  let payload;
+  try {
+    responseBody = await response.text();
+    payload = JSON.parse(responseBody);
+  } catch {
+    const requestId = response.headers.get("x-request-id");
+    const reference = requestId ? ` Reference: ${requestId}.` : "";
+    throw new Error(`The assessment service returned an unreadable response (HTTP ${response.status}).${reference}`);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    const message = payload.error || `The assessment could not be completed (HTTP ${response.status}).`;
+    const requestId = payload.requestId || response.headers.get("x-request-id");
+    throw new Error(requestId ? `${message} Reference: ${requestId}.` : message);
+  }
+  if (!isValidAssessmentResult(payload.result)) {
+    throw new Error("The assessment service returned an incomplete result. Please try again.");
+  }
+
+  return payload.result;
 }
 
-function openPDFReport(patient, results, imageDataUrl) {
-  const reportId = "MSA-" + (Math.floor(Math.random() * 900000) + 100000);
-  const date = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-  const sevColor = results.severityIndex === "Low" ? "#16a34a" : results.severityIndex === "Moderate" ? "#d97706" : "#dc2626";
+async function compressImageForAnalysis(imageDataUrl) {
+  const image = new Image();
+  image.src = imageDataUrl;
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error("This image could not be opened. Please choose another image."));
+  });
+  if (!image.naturalWidth || !image.naturalHeight) {
+    throw new Error("This image has invalid dimensions. Please choose another image.");
+  }
 
-  const condRows = results.conditions.map(c => `
-    <tr>
-      <td style="padding:14px 0;border-bottom:1px solid #f2ece6;font-weight:600;color:#1A1717;">${c.name}</td>
-      <td style="padding:14px 0;border-bottom:1px solid #f2ece6;color:#C2A278;font-size:10px;font-weight:700;letter-spacing:1.5px;">${c.severity.toUpperCase()}</td>
-      <td style="padding:14px 0;border-bottom:1px solid #f2ece6;text-align:right;font-weight:700;font-size:17px;color:#591321;">${c.percentage}%</td>
-    </tr>`).join("");
+  for (const maxDimension of [1600, 1200, 900]) {
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(image.naturalWidth * scale);
+    canvas.height = Math.round(image.naturalHeight * scale);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("This image could not be prepared for analysis. Please try another image.");
+    }
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const compressed = canvas.toDataURL("image/jpeg", 0.78);
+    const base64Length = compressed.split(",")[1].length;
+    if (Math.ceil(base64Length * 0.75) <= 2.5 * 1024 * 1024) {
+      return compressed;
+    }
+  }
 
-  const morningSteps = results.morningRoutine.map((s,i)=>`<div style="display:flex;gap:14px;margin:12px 0;font-size:13px;align-items:flex-start;"><span style="color:#C2A278;font-weight:700;font-size:11px;min-width:20px;margin-top:2px;">0${i+1}</span><span style="color:#4A4444;line-height:1.6;">${s}</span></div>`).join("");
-  const eveningSteps = results.eveningRoutine.map((s,i)=>`<div style="display:flex;gap:14px;margin:12px 0;font-size:13px;align-items:flex-start;"><span style="color:#C2A278;font-weight:700;font-size:11px;min-width:20px;margin-top:2px;">0${i+1}</span><span style="color:#4A4444;line-height:1.6;">${s}</span></div>`).join("");
+  throw new Error("This image is too large to analyze. Please choose a smaller image.");
+}
 
-  const findingsHTML = results.conditions.slice(0,3).map((c,i)=>`
-    <div style="flex:1;padding:24px 20px;border-right:${i<2?'1px solid #f2ece6':'none'};">
-      <div style="font-size:9px;letter-spacing:2px;color:#C2A278;font-weight:700;margin-bottom:8px;">PRIMARY FINDING 0${i+1}</div>
-      <div style="font-size:22px;font-weight:400;margin-bottom:12px;color:#591321;font-family:'Playfair Display', serif;">${c.name}</div>
-      <div style="font-size:12px;color:#665F5F;line-height:1.8;">${c.description}</div>
-    </div>`).join("");
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
 
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Skin Analysis Report — ${patient.name}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+function openPDFReport(patient, results, imageDataUrl, assessmentDate, dermatologist) {
+  const date = formatDate(assessmentDate);
+  const value = escapeHTML;
+  const observations = results.conditions.map(condition => `
+    <article class="observation">
+      <div class="observation-heading"><strong>${value(condition.name)}</strong><span>${condition.severity ? `${value(condition.severity)} estimated` : "Severity not estimated"}</span></div>
+      <p>${value(condition.description)}</p>
+    </article>`).join("");
+  const observationSummary = results.conditions.map(condition => `
+    <div class="observation-short"><strong>${value(condition.name)}</strong><span>${condition.severity ? `${value(condition.severity)} estimate` : "No severity estimate"}</span></div>`).join("");
+  const routine = steps => steps.map((step, index) => `
+    <li><span>${index + 1}</span>${value(step)}</li>`).join("");
+  const contactItems = [
+    dermatologist.qualifications?.length && `<div><dt>Qualifications</dt><dd>${value(dermatologist.qualifications.join(", "))}</dd></div>`,
+    dermatologist.specialization && `<div><dt>Specialization</dt><dd>${value(dermatologist.specialization)}</dd></div>`,
+    dermatologist.experience && `<div><dt>Experience</dt><dd>${value(dermatologist.experience)}</dd></div>`,
+    dermatologist.phone && `<div><dt>Phone</dt><dd>${value(dermatologist.countryCode)} ${value(dermatologist.phone)}</dd></div>`,
+    dermatologist.whatsapp && `<div><dt>WhatsApp</dt><dd>${value(dermatologist.whatsapp)}</dd></div>`,
+    dermatologist.email && `<div><dt>Email</dt><dd>${value(dermatologist.email)}</dd></div>`,
+    dermatologist.address && `<div><dt>Address</dt><dd>${value(dermatologist.address)}</dd></div>`,
+  ].filter(Boolean).join("");
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${value(PRODUCT_NAME)} Assessment Report - ${value(patient.name)}</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Plus Jakarta Sans', system-ui, sans-serif;background:#F5F1EC;padding:40px 20px;}
-.page{width:794px;min-height:1123px;margin:0 auto 36px;padding:64px;background:white;position:relative;box-shadow:0 30px 60px rgba(89, 19, 33, 0.06);border: 1px solid rgba(89, 19, 33, 0.04);border-radius:12px;}
-.hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:48px;padding-bottom:24px;border-bottom:1px solid #f2ece6;}
-.logo{width:38px;height:38px;background:#591321;border: 1px solid #C2A278;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:700;}
-.rid{text-align:right;}
-.rid .conf{font-size:9px;letter-spacing:2px;color:#C2A278;font-weight:700;}
-.rid .id{font-size:16px;font-weight:600;color:#1A1717;margin-top:2px;}
-.rid .dt{font-size:12px;color:#8E8585;margin-top:2px;}
-.title{font-family:'Playfair Display', Georgia, serif;font-size:52px;font-weight:400;line-height:1.15;margin-bottom:12px;color:#591321;}
-.subtitle{font-size:13px;color:#8E8585;margin-bottom:44px;line-height:1.6;}
-.pt{display:flex;gap:40px;margin-bottom:36px;background:#FCFAF9;padding:24px;border-radius:12px;border: 1px solid #f2ece6;}
-.pt img{width:180px;height:200px;object-fit:cover;border-radius:8px;border: 1px solid #f2ece6;}
-.pt-info{flex:1;display:flex;flex-direction:column;justify-content:center;}
-.pt-name{font-family:'Playfair Display', Georgia, serif;font-size:38px;font-weight:400;margin-bottom:20px;color:#591321;}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
-.info-label{font-size:9px;letter-spacing:1.5px;color:#C2A278;font-weight:700;margin-bottom:4px;}
-.info-val{font-size:15px;font-weight:500;color:#1A1717;}
-.accent{color:#dc2626;}
-hr{border:none;border-top:1px solid #f2ece6;margin:28px 0;}
-.sl{font-size:9px;letter-spacing:2px;color:#C2A278;font-weight:700;margin-bottom:16px;}
-.clin{display:grid;grid-template-columns:1fr 1fr;gap:40px;}
-.pl{font-size:10px;color:#C2A278;font-weight:700;letter-spacing:1px;margin-bottom:10px;}
-.pt-txt{font-size:14px;line-height:1.8;color:#4A4444;font-style:italic;}
-.ctags{margin-top:16px;}
-.ctag{display:inline-block;border:1px solid #f2ece6;background:#FFF;border-radius:20px;padding:5px 14px;font-size:11px;margin:3px;color:#4A4444;font-weight:500;}
-.sev-val{font-size:52px;font-family:'Playfair Display', serif;font-weight:400;line-height:1;}
-.sev-sub{font-size:13px;color:#8E8585;margin-top:8px;}
-.ftr{position:absolute;bottom:48px;left:64px;right:64px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #f2ece6;padding-top:16px;}
-.ftr-brand{font-size:9px;letter-spacing:1.5px;color:#C2A278;font-weight:700;}
-.ftr-pg{font-size:10px;color:#8E8585;}
-.diag{display:flex;gap:40px;margin-bottom:32px;background:#FCFAF9;padding:24px;border-radius:12px;border: 1px solid #f2ece6;}
-.diag img{width:200px;height:200px;object-fit:cover;border-radius:8px;border: 1px solid #f2ece6;}
-.ai-tag{font-size:9px;color:#C2A278;font-weight:700;letter-spacing:1.5px;border:1px solid #f2ece6;background:#FFF;padding:6px 12px;display:inline-block;margin-top:12px;border-radius:4px;}
-.cond-tbl{flex:1;}
-.cond-tbl table{width:100%;border-collapse:collapse;}
-.fnds{display:flex;border-top:1px solid #f2ece6;margin-top:32px;}
-.rtn{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:36px;}
-.rtn-ttl{font-size:10px;letter-spacing:2px;color:#C2A278;font-weight:700;padding-bottom:10px;border-bottom:1px solid #f2ece6;margin-bottom:16px;}
-.fu{background:#FCFAF9;padding:28px;border-radius:12px;border: 1px solid #f2ece6;font-size:14px;line-height:1.9;color:#4A4444;margin-bottom:36px;font-style:italic;}
-.doc-ftr{background:#591321;border-radius:12px;border: 1px solid #C2A278;color:white;padding:36px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}
-.df-lbl{font-size:9px;letter-spacing:2px;color:#C2A278;font-weight:700;margin-bottom:10px;}
-.df-name{font-family:'Playfair Display', serif;font-size:30px;font-weight:400;color:#FFF;}
-.df-sub{font-size:13px;color:#D4AF37;margin-top:4px;}
-.df-contact{font-size:20px;font-weight:400;letter-spacing:0.5px;}
-.disc{font-size:10px;color:#8E8585;text-align:center;padding:24px;line-height:1.8;}
-.print-btn{display:block;background:#591321;color:white;border:1px solid #C2A278;padding:16px 48px;font-size:13px;font-weight:700;cursor:pointer;margin:0 auto 24px;letter-spacing:2px;border-radius:30px;box-shadow:0 10px 25px -5px rgba(89, 19, 33, 0.2);transition:all 0.3s;}
-.print-btn:hover{background:#3A0C16;transform:translateY(-1px);}
-@media print{body{background:white;padding:0;}.page{margin:0;box-shadow:none;border:none;}.no-print{display:none!important;}}
+*{box-sizing:border-box}body{margin:0;background:#f4f0ed;color:#342b2d;font:14px/1.6 Arial,sans-serif}
+.toolbar{text-align:center;padding:18px}.print{border:0;border-radius:24px;background:#591321;color:#fff;padding:13px 24px;font-weight:700;cursor:pointer}
+.page{position:relative;width:210mm;min-height:297mm;margin:20px auto;background:#fff;padding:17mm 17mm 24mm;box-shadow:0 8px 32px #59132112;page-break-after:always;break-after:page}
+.page:last-of-type{page-break-after:auto;break-after:auto}.header{display:flex;align-items:center;justify-content:space-between;padding-bottom:16px;border-bottom:1px solid #eee6e0}
+.brand{font-size:18px;font-weight:700;color:#591321;letter-spacing:.3px}.meta{text-align:right;color:#7a6d6c;font-size:11px}
+h1{font-size:29px;line-height:1.2;color:#591321;margin:32px 0 6px}h2{font-size:17px;color:#591321;margin:26px 0 12px}
+.subtitle{color:#7a6d6c;margin:0 0 22px}.card{padding:18px;border:1px solid #eee6e0;border-radius:12px;background:#fcfaf9;margin:14px 0}
+.patient{display:grid;grid-template-columns:110px 1fr;gap:18px;align-items:center}.patient img{width:110px;height:130px;object-fit:cover;border-radius:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.label,dt{font-size:10px;color:#8d6b49;font-weight:700;text-transform:uppercase;letter-spacing:.7px}
+.value,dd{margin:3px 0 0;color:#342b2d;font-weight:600}.summary{white-space:pre-wrap}.observation{padding:13px 0;border-bottom:1px solid #eee6e0;break-inside:avoid}
+.observation:last-child{border-bottom:0}.observation-heading{display:flex;justify-content:space-between;gap:12px}.observation-heading span{color:#8d6b49;font-size:11px;text-align:right}
+.observation p{margin:5px 0 0;color:#625759}.routine-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.routine h2{margin-top:18px}
+.observation-short{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid #eee6e0;font-size:11px}.observation-short:last-child{border-bottom:0}.observation-short span{color:#8d6b49;text-align:right}
+ol{list-style:none;padding:0;margin:0}li{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #f1ece8}
+li span{flex:none;color:#8d6b49;font-weight:700}.contact{background:#591321;color:#fff;border-radius:12px;padding:18px}.contact h2{color:#fff;margin:0 0 10px}
+.contact dl{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}.contact dt{color:#e4cda9}.contact dd{color:#fff;overflow-wrap:anywhere}
+.disclaimer{padding:14px;border:1px solid #c9ab7f;border-radius:10px;background:#fbf7f1;color:#4d3c34;font-size:12px;line-height:1.55}
+.footer{position:absolute;bottom:12mm;left:17mm;right:17mm;display:flex;justify-content:space-between;border-top:1px solid #eee6e0;padding-top:9px;color:#8b7e7c;font-size:10px}
+@media(max-width:800px){.page{width:100%;min-height:0;margin:0 auto 14px;padding:24px 20px 60px}.footer{left:20px;right:20px;bottom:18px}.patient{grid-template-columns:80px 1fr}.patient img{width:80px;height:100px}}
+@page{size:A4;margin:0}@media print{body{background:#fff}.toolbar{display:none}.page{width:210mm;height:297mm;min-height:297mm;margin:0;padding:17mm 17mm 24mm;box-shadow:none;overflow:hidden}.footer{left:17mm;right:17mm;bottom:12mm}}
 </style></head><body>
-<div class="no-print" style="text-align:center;padding:16px;"><button class="print-btn" onclick="window.print()">⬇ DOWNLOAD / PRINT CLINICAL PDF</button></div>
-
-<!-- PAGE 1 -->
-<div class="page">
-<div class="hdr"><div class="logo">S</div><div class="rid"><div class="conf">CONFIDENTIAL MEDICAL REPORT</div><div class="id">${reportId}</div><div class="dt">${date}</div></div></div>
-<div class="title">Dermatological<br>Assessment</div>
-<div class="subtitle">An advanced, AI-assisted microscopic analysis of skin health, textural composition, and epidermal conditions.</div>
-<div class="pt">
-<img src="${imageDataUrl}" alt="Patient photo"/>
-<div class="pt-info">
-<div class="pt-name">${patient.name}</div>
-<div class="info-grid">
-<div><div class="info-label">PATIENT AGE</div><div class="info-val">${patient.age} Years</div></div>
-<div><div class="info-label">SKIN CLASSIFICATION</div><div class="info-val">${results.skinType.toUpperCase()}</div></div>
-<div><div class="info-label">PRIMARY CONCERN</div><div class="info-val">${results.primaryConcern.toUpperCase()}</div></div>
-<div><div class="info-label">IDENTIFIED FOCUS</div><div class="info-val accent" style="color:#591321;font-weight:700;">${results.conditions[0]?.name||"—"}</div></div>
-</div></div></div>
-<hr/>
-<div class="sl">CLINICAL EVALUATION SUMMARY</div>
-<div class="clin">
-<div>
-<div class="pl">PHYSICIAN'S RECOMMENDATION SUMMARY</div>
-<div class="pt-txt">"${results.physicianSummary}"</div>
-<div class="ctags"><div class="pl" style="margin-top:20px;">DIAGNOSED MARKERS:</div>${results.conditions.slice(0,3).map(c=>`<span class="ctag">${c.name}</span>`).join("")}</div>
-</div>
-<div>
-<div class="pl">SEVERITY COEFFICIENT</div>
-<div class="sev-val" style="color:${sevColor};">${results.severityIndex}</div>
-<div class="sev-sub">Calculated Biological Skin Age: ${results.skinAge}</div>
-</div>
-</div>
-<div class="ftr"><div class="ftr-brand">AI SKIN ASSESSMENT SYSTEMS &nbsp;·&nbsp; ${DOC.clinic.toUpperCase()}</div><div class="ftr-pg">PAGE 1 / 3</div></div>
-</div>
-
-<!-- PAGE 2 -->
-<div class="page">
-<div class="hdr"><div class="logo">S</div><div class="rid"><div class="conf">CONFIDENTIAL REPORT</div><div class="id">${reportId}</div><div class="dt">${date}</div></div></div>
-<div class="sl">DIAGNOSTIC DERM-MAPPING</div>
-<div class="subtitle">Microscopic breakdown of detected epidermal conditions and computed severity profiles.</div>
-<div class="diag">
-<div><img src="${imageDataUrl}" alt="Patient"/><div class="ai-tag">EPIDERMAL SCANS</div></div>
-<div class="cond-tbl"><table>${condRows}</table></div>
-</div>
-<div class="fnds">${findingsHTML}</div>
-<div class="ftr"><div class="ftr-brand">AI SKIN ASSESSMENT SYSTEMS &nbsp;·&nbsp; ${DOC.clinic.toUpperCase()}</div><div class="ftr-pg">PAGE 2 / 3</div></div>
-</div>
-
-<!-- PAGE 3 -->
-<div class="page">
-<div class="hdr"><div class="logo">S</div><div class="rid"><div class="conf">CONFIDENTIAL REPORT</div><div class="id">${reportId}</div><div class="dt">${date}</div></div></div>
-<div class="sl">PRESCRIBED PROTOCOL</div>
-<div class="subtitle">A tailored clinical regimen designed to target identified cellular markers.</div>
-<div class="rtn">
-<div><div class="rtn-ttl">☀️ MORNING CELLULAR ROUTINE</div>${morningSteps}</div>
-<div><div class="rtn-ttl">🌙 EVENING CELLULAR ROUTINE</div>${eveningSteps}</div>
-</div>
-<div class="sl">CLINICAL FOLLOW-UP DIRECTIVES</div>
-<div class="fu">"${results.followUpAdvice}"</div>
-<div class="doc-ftr">
-<div><div class="df-lbl">ATTENDING BOARD SPECIALIST</div><div class="df-name">${DOC.name}</div><div class="df-sub">${DOC.clinic}</div></div>
-<div><div class="df-lbl">REPRESENTATIVE OFFICES</div><div class="df-contact">+91 ${DOC.phone}</div><div class="df-sub">${DOC.city.toUpperCase()} CLINICAL CAMPUS</div></div>
-</div>
-<div class="disc">DISCLAIMER: This diagnostic estimation is compiled via secure AI algorithms for preliminary screening and does not represent absolute medical diagnosis. Please coordinate with ${DOC.name} or qualified clinicians to implement therapeutic plans.</div>
-<div class="ftr"><div class="ftr-brand">AI SKIN ASSESSMENT SYSTEMS &nbsp;·&nbsp; ${DOC.clinic.toUpperCase()}</div><div class="ftr-pg">PAGE 3 / 3</div></div>
-</div>
-</body></html>`;
+<div class="toolbar"><button class="print" onclick="window.print()">Download / print report</button><p>Choose “Save as PDF” in the print dialog.</p></div>
+<main>
+  <section class="page">
+    <header class="header"><div class="brand">${value(PRODUCT_NAME)}</div><div class="meta">AI-Assisted Skin Assessment Report<br>${value(date)}</div></header>
+    <h1>AI-Assisted Skin Assessment Report</h1><p class="subtitle">Preliminary observations for informational purposes</p>
+    <h2>Patient information</h2>
+    <div class="card patient">${imageDataUrl ? `<img src="${value(imageDataUrl)}" alt="Patient-provided image">` : ""}
+      <div class="grid">
+        <div><div class="label">Patient</div><div class="value">${value(patient.name)}</div></div>
+        <div><div class="label">Age</div><div class="value">${value(patient.age)} years</div></div>
+        <div><div class="label">Assessment date</div><div class="value">${value(date)}</div></div>
+        <div><div class="label">Phone</div><div class="value">${value(patient.phone || "Not provided")}</div></div>
+        <div><div class="label">Location</div><div class="value">${value([patient.city, patient.state].filter(Boolean).join(", ") || "Not provided")}</div></div>
+      </div>
+    </div>
+    <h2>Skin classification</h2><div class="card"><div class="grid">
+      <div><div class="label">AI-estimated skin type</div><div class="value">${value(results.skinType)}</div></div>
+      <div><div class="label">Primary visible concern</div><div class="value">${value(results.primaryConcern)}</div></div>
+    </div></div>
+    <h2>Preliminary assessment summary</h2><div class="card summary">${value(results.summary)}</div>
+    <h2>AI-Identified Skin Observations</h2><div class="card">${observationSummary}</div>
+    <footer class="footer"><span>${value(PRODUCT_NAME)} · Preliminary, AI-generated observations</span><span>Page 1 of 3</span></footer>
+  </section>
+  <section class="page">
+    <header class="header"><div class="brand">${value(PRODUCT_NAME)}</div><div class="meta">AI-Assisted Skin Assessment Report<br>${value(date)}</div></header>
+    <h1>Detailed Skin Observations</h1><p class="subtitle">Visual observations are limited by image quality, lighting, and the information available.</p>
+    <h2>Observed conditions</h2><div class="card">${observations}</div>
+    <footer class="footer"><span>${value(PRODUCT_NAME)} · Not a medical diagnosis</span><span>Page 2 of 3</span></footer>
+  </section>
+  <section class="page">
+    <header class="header"><div class="brand">${value(PRODUCT_NAME)}</div><div class="meta">AI-Assisted Skin Assessment Report<br>${value(date)}</div></header>
+    <h1>Skincare suggestions</h1><p class="subtitle">General suggestions only; not a prescription or individualized treatment plan.</p>
+    <div class="routine-grid">
+      <section class="routine"><h2>Suggested Morning Skincare Routine</h2><ol>${routine(results.morningRoutine)}</ol></section>
+      <section class="routine"><h2>Suggested Evening Skincare Routine</h2><ol>${routine(results.eveningRoutine)}</ol></section>
+    </div>
+    <h2>Dermatologist Consultation</h2><div class="card">${value(results.followUpAdvice)}</div>
+    <section class="contact"><h2>${value(dermatologist.doctorName || "Dermatologist")}</h2>
+      ${dermatologist.clinicName ? `<p>${value(dermatologist.clinicName)}</p>` : ""}
+      ${dermatologist.profile ? `<p>${value(dermatologist.profile)}</p>` : ""}
+      <dl>${contactItems}</dl>
+    </section>
+    <h2>Medical disclaimer</h2><div class="disclaimer">${value(MEDICAL_DISCLAIMER)}</div>
+    <footer class="footer"><span>${value(PRODUCT_NAME)} · Please consult a qualified dermatologist</span><span>Page 3 of 3</span></footer>
+  </section>
+</main></body></html>`;
 
   const win = window.open("", "_blank");
-  if (win) { win.document.write(html); win.document.close(); }
+  if (!win) {
+    throw new Error("Allow pop-ups to open and print the assessment report.");
+  }
+  win.document.write(html);
+  win.document.close();
 }
 
 export default function App() {
   const [screen, setScreen] = useState("landing");
   const [capturedImage, setCapturedImage] = useState(null);
-  const [patient, setPatient] = useState({ name: "", age: "", phone: "", city: "Mumbai", state: "Maharashtra" });
+  const [patient, setPatient] = useState({ name: "", age: "", phone: "", city: "", state: "" });
   const [results, setResults] = useState(null);
-  const [progress, setProgress] = useState(0);
+  const [assessment, setAssessment] = useState(null);
   const [tipIdx, setTipIdx] = useState(0);
   const [countdown, setCountdown] = useState(null);
   const [activeTab, setActiveTab] = useState("results");
   const [camError, setCamError] = useState(false);
+  const [analysisError, setAnalysisError] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const [reportError, setReportError] = useState("");
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const isPatientFormValid =
+    patient.name.trim().length > 0 &&
+    /^\d{1,3}$/.test(patient.age) &&
+    Number(patient.age) >= 1 &&
+    Number(patient.age) <= 120 &&
+    /^[0-9][0-9 ()-]{6,14}$/.test(patient.phone.trim()) &&
+    patient.city.trim().length > 0 &&
+    patient.state.length > 0;
 
   const videoRef = useRef(null);
   const overlayRef = useRef(null);
@@ -337,43 +370,59 @@ export default function App() {
 
   const handleFile = (e) => {
     const f = e.target.files[0];
+    e.target.value = "";
     if (!f) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) {
+      setUploadError("Choose a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (f.size > 6 * 1024 * 1024) {
+      setUploadError("The selected image is larger than 6 MB. Choose a smaller image.");
+      return;
+    }
+    setUploadError("");
     const r = new FileReader();
-    r.onload = ev => { setCapturedImage(ev.target.result); setScreen("preview"); };
+    r.onload = ev => {
+      if (typeof ev.target.result !== "string") {
+        setUploadError("This image could not be read. Please choose another image.");
+        return;
+      }
+      setCapturedImage(ev.target.result);
+      setScreen("preview");
+    };
+    r.onerror = () => setUploadError("This image could not be read. Please choose another image.");
     r.readAsDataURL(f);
   };
 
   const startAnalysis = async () => {
+    setAnalysisError("");
     setScreen("scanning");
-    setProgress(0);
     setTipIdx(0);
+    setAssessment(null);
+    const patientSnapshot = { ...patient };
+    const dermatologistSnapshot = {
+      ...DOC,
+      qualifications: [...(DOC.qualifications || [])],
+    };
+    const assessmentDate = new Date().toISOString();
     const tipIv = setInterval(() => setTipIdx(i => (i + 1) % TIPS.length), 3000);
-    const progIv = setInterval(() => setProgress(p => { if (p >= 90) { clearInterval(progIv); return 90; } return p + Math.random() * 7; }), 350);
 
     try {
-      const b64 = capturedImage.split(",")[1];
-      const data = await analyzeWithAI(b64, patient);
-      clearInterval(progIv); clearInterval(tipIv);
-      setProgress(100);
-      setTimeout(() => { setResults(data); setActiveTab("results"); setScreen("results"); }, 700);
-    } catch {
-      clearInterval(progIv); clearInterval(tipIv);
-      const mock = {
-        skinType: "combination", primaryConcern: "acne & pigmentation", severityIndex: "Moderate", skinAge: "consistent with age",
-        conditions: [
-          { name: "Acne & Blemishes", severity: "Moderate", percentage: 35, description: "Visible lesions and marks on the cheeks and lower face consistent with reported concern." },
-          { name: "Hyperpigmentation", severity: "Mild", percentage: 30, description: "Uneven skin tone and mild post-inflammatory pigmentation marks observed." },
-          { name: "Dark Circles", severity: "Mild", percentage: 25, description: "Mild shadowing visible under the eyes, likely accentuated by lighting." },
-          { name: "Enlarged Pores", severity: "Mild", percentage: 20, description: "Slightly visible pores on the nose area, a normal textural feature." },
-          { name: "Fine Lines", severity: "Mild", percentage: 10, description: "Early signs of fine lines visible, age-appropriate findings." },
-        ],
-        physicianSummary: `Analysis indicates combination skin with moderate acne activity for a ${patient.age}-year-old patient. Primary findings show post-inflammatory marks alongside enlarged pores. A structured routine targeting acne and pigmentation is strongly recommended.`,
-        morningRoutine: ["Gentle non-comedogenic cleanser", "Niacinamide serum (10%) for PIH", "Lightweight oil-free moisturizer", "SPF 30+ broad-spectrum sunscreen"],
-        eveningRoutine: ["Gentle cleanser", "Targeted acne treatment (benzoyl peroxide)", "Hydrating night cream"],
-        followUpAdvice: `Given the moderate severity and chronic nature of the condition, it is highly recommended to consult ${DOC.name} for a personalized treatment plan. Prescription-grade topicals or oral medications may be needed to prevent further scarring.`
-      };
-      setProgress(100);
-      setTimeout(() => { setResults(mock); setActiveTab("results"); setScreen("results"); }, 700);
+      const image = await compressImageForAnalysis(capturedImage);
+      const data = await analyzeWithAI(image);
+      setResults(data);
+      setAssessment({
+        patient: patientSnapshot,
+        dermatologist: dermatologistSnapshot,
+        assessmentDate,
+      });
+      setActiveTab("results");
+      setScreen("results");
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : "The assessment could not be completed. Please try again.");
+      setScreen("form");
+    } finally {
+      clearInterval(tipIv);
     }
   };
 
@@ -433,16 +482,16 @@ export default function App() {
             fontWeight: 700,
             letterSpacing: "2.5px",
             marginBottom: 24
-          }}>PREMIUM CLINICAL PORTAL</div>
+          }}>{PRODUCT_NAME.toUpperCase()} · SKIN WELLNESS PLATFORM</div>
           <div style={{ fontSize: isMobile ? 30 : 38, fontHeight: 1.2, fontWeight: 400, ...sSerif, lineHeight: 1.25, marginBottom: 20, color: "#FFF" }}>
-            Advanced AI<br/>Skin Analysis
+            A clearer view<br/>of your skin
           </div>
           <div style={{ fontSize: 14, opacity: 0.8, lineHeight: 1.8, fontWeight: 300 }}>
-            Welcome to the digital dermatological consultation and epidermal assessment network for {DOC.clinic}.
+            AI-assisted preliminary skin observations, thoughtful skincare suggestions, and a simple path to a dermatologist consultation.
           </div>
         </div>
         <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11, fontWeight: 500, letterSpacing: "1px", marginTop: isMobile ? 32 : 0 }}>
-          POWERED BY SECURE AI · CLINCALLY VERIFIED
+          PRELIMINARY OBSERVATIONS · PROFESSIONAL REVIEW ENCOURAGED
         </div>
       </div>
 
@@ -467,7 +516,7 @@ export default function App() {
           animation: "fadeUp 0.6s cubic-bezier(0.16, 1, 0.3, 1)",
           boxSizing: "border-box"
         }}>
-          {/* Doctor card */}
+          {/* Demonstration clinic profile */}
           <div style={{ textAlign: "center", marginBottom: 28 }}>
             <div style={{ 
               width: 110, 
@@ -482,25 +531,29 @@ export default function App() {
               overflow: "hidden",
               background: "#FFF"
             }}>
-              <img src={doctorImage} alt={DOC.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              {DOC.image && <img src={DOC.image} alt={DOC.doctorName || "Dermatologist"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
             </div>
-            <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", ...sSerif }}>{DOC.name}</div>
-            <div style={{ color: GOLD, fontWeight: 700, fontSize: 11, letterSpacing: "1.5px", textTransform: "uppercase", marginTop: 6 }}>{DOC.clinic}</div>
-            <div style={{ color: "#6E6565", fontSize: 12, marginTop: 8, fontWeight: 500 }}>{DOC.qualification}</div>
-            <div style={{ color: "#8E8585", fontSize: 12, marginTop: 6, fontWeight: 500 }}>📍 {DOC.address}</div>
-            <div style={{ color: "#8E8585", fontSize: 12, marginTop: 4, fontWeight: 500 }}>✉ {DOC.email}</div>
+            <div style={{ color: GOLD, fontWeight: 700, fontSize: 9, letterSpacing: "1.5px", textTransform: "uppercase" }}>Demonstration dermatologist profile</div>
+            {DOC.doctorName && <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", ...sSerif }}>{DOC.doctorName}</div>}
+            {DOC.clinicName && <div style={{ color: GOLD, fontWeight: 700, fontSize: 11, letterSpacing: "1.5px", textTransform: "uppercase", marginTop: 6 }}>{DOC.clinicName}</div>}
+            {DOC.profile && <div style={{ color: "#6E6565", fontSize: 12, marginTop: 8, lineHeight: 1.6 }}>{DOC.profile}</div>}
+            {DOC.qualifications?.length > 0 && <div style={{ color: "#6E6565", fontSize: 12, marginTop: 8, fontWeight: 500 }}>{DOC.qualifications.join(", ")}</div>}
+            {DOC.specialization && <div style={{ color: "#6E6565", fontSize: 12, marginTop: 4, fontWeight: 500 }}>{DOC.specialization}</div>}
+            {DOC.experience && <div style={{ color: "#6E6565", fontSize: 12, marginTop: 4, fontWeight: 500 }}>{DOC.experience}</div>}
+            {DOC.address && <div style={{ color: "#8E8585", fontSize: 12, marginTop: 6, fontWeight: 500 }}>📍 {DOC.address}</div>}
+            {DOC.email && <div style={{ color: "#8E8585", fontSize: 12, marginTop: 4, fontWeight: 500 }}>✉ {DOC.email}</div>}
           </div>
 
           <div style={{ borderTop: "1px solid #F0ECE7", paddingTop: 28, marginBottom: 28 }}>
             <div style={{ textAlign: "center", marginBottom: 24 }}>
               <div style={{ fontSize: 18, fontWeight: 600, color: "#1A1717", marginBottom: 8, letterSpacing: "-0.2px" }}>Begin Your Assessment</div>
-              <div style={{ fontSize: 13, color: "#6E6565", lineHeight: 1.7, fontWeight: 300 }}>In three quick and secure steps, our AI parses your skin health indicators to output clinical guidelines.</div>
+              <div style={{ fontSize: 13, color: "#6E6565", lineHeight: 1.7, fontWeight: 300 }}>Capture or upload a photo, share a few details, and review preliminary AI observations and general skincare suggestions.</div>
             </div>
             <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 8, justifyContent: "space-around", marginBottom: 32 }}>
               {[
-                { icon: "📷", t: "1. Capture Photo", d: "Clear epidermal photo." },
+                { icon: "📷", t: "1. Add a Photo", d: "Camera or image upload." },
                 { icon: "🤖", t: "2. AI Analysis", d: "Extract indicators." },
-                { icon: "📄", t: "3. Get Regimen", d: "Bespoke clinical report." },
+                { icon: "📄", t: "3. Review Report", d: "Observations and routines." },
               ].map(x => (
                 <div key={x.t} style={{ 
                   textAlign: "center", 
@@ -548,7 +601,7 @@ export default function App() {
               cursor: "pointer", 
               boxShadow: "0 10px 25px -5px rgba(89, 19, 33, 0.25)"
             }}>
-              Start My Skin Analysis
+              Start Skin Assessment
             </button>
           </div>
 
@@ -556,11 +609,11 @@ export default function App() {
             <div style={{ fontSize: 11, color: "#8E8585", marginBottom: 12, fontWeight: 500 }}>For bookings or direct contact:</div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
               {[
-                { label: "📞 Call Clinic", href: `tel:+91${DOC.phone}` },
-                { label: "💬 WhatsApp", href: `https://wa.me/${DOC.wa}` },
-                { label: "✉ Email", href: `mailto:${DOC.email}` },
-                { label: "📍 Location", href: `https://maps.google.com/?q=${encodeURIComponent(DOC.address)}` },
-              ].map(b => (
+                DOC.phone && { label: "📞 Call Clinic", href: `tel:${DOC.countryCode}${DOC.phone}` },
+                DOC.whatsapp && { label: "💬 WhatsApp", href: `https://wa.me/${DOC.whatsapp}` },
+                DOC.email && { label: "✉ Email", href: `mailto:${DOC.email}` },
+                DOC.address && { label: "📍 Location", href: `https://maps.google.com/?q=${encodeURIComponent(DOC.address)}` },
+              ].filter(Boolean).map(b => (
                 <a key={b.label} className="contact-btn" href={b.href} target="_blank" rel="noreferrer"
                   style={{ 
                     padding: "10px 18px", 
@@ -575,6 +628,15 @@ export default function App() {
                     cursor: "pointer" 
                   }}>{b.label}</a>
               ))}
+            </div>
+            <div aria-label="Platform contact" style={{ borderTop: "1px solid #F0ECE7", marginTop: 20, paddingTop: 16 }}>
+              <div style={{ fontSize: 10, color: "#8E8585", marginBottom: 6, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase" }}>Platform contact · not a clinical contact</div>
+              <div style={{ fontSize: 12, color: "#4A4444", marginBottom: 8 }}>{PROJECT_CONTACT.name}</div>
+              <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", fontSize: 11 }}>
+                  <a href={`mailto:${PROJECT_CONTACT.email}`} style={{ color: MAROON }}>{PROJECT_CONTACT.email}</a>
+                  <a href={`tel:${PROJECT_CONTACT.mobile}`} style={{ color: MAROON }}>{PROJECT_CONTACT.mobile}</a>
+                  <a href={`https://wa.me/${PROJECT_CONTACT.whatsappCountryCode}${PROJECT_CONTACT.whatsapp}`} target="_blank" rel="noreferrer" style={{ color: MAROON }}>Project WhatsApp</a>
+              </div>
             </div>
           </div>
         </div>
@@ -605,8 +667,8 @@ export default function App() {
             <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", marginBottom: 6, ...sSerif }}>Choose Your Analysis</div>
             <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 24, fontWeight: 300 }}>Select the examination protocol for your assessment:</div>
             {[
-              { type: "quick", icon: "⚡", title: "Quick Analysis", desc: "Get instant diagnostic approximations from your photo." },
-              { type: "detailed", icon: "📋", title: "Detailed Consultation", desc: "Answer specific dermal inquiries for a highly precise biological index.", rec: true },
+              { type: "quick", icon: "⚡", title: "Quick Analysis", desc: "Review preliminary AI observations from your photo." },
+              { type: "detailed", icon: "📋", title: "Detailed Consultation", desc: "Add patient details and a photo before reviewing observations.", rec: true },
             ].map(o => (
               <div key={o.type} className="opt-card" onClick={() => setScreen("tips")}
                 style={{ 
@@ -683,16 +745,16 @@ export default function App() {
             fontWeight: 700,
             letterSpacing: "2px",
             marginBottom: 16
-          }}>DIAGNOSTIC GUIDELINES</div>
+          }}>PREPARING YOUR PHOTO</div>
           <div style={{ fontSize: 28, fontWeight: 400, color: "#1A1717", marginBottom: 8, ...sSerif }}>Before We Begin</div>
-          <div style={{ fontSize: 13, color: "#8E8585", fontWeight: 300 }}>Ensure these conditions are met for optimal optical reading:</div>
+          <div style={{ fontSize: 13, color: "#8E8585", fontWeight: 300 }}>A clear, evenly lit photo can help the AI describe visible features:</div>
         </div>
         {[
           { e: "👓", t: "Remove spectacles, lenses, or facial accessories" },
           { e: "💡", t: "Directly face a natural or strong light source" },
           { e: "💄", t: "Ensure skin is clean and completely devoid of makeup" },
           { e: "🙍", t: "Pull hair entirely away from the cheek & forehead fields" },
-          { e: "😐", t: "Maintain a neutral, steady clinical expression" },
+          { e: "😐", t: "Use a neutral expression and keep the camera steady" },
         ].map(tip => (
           <div key={tip.t} style={{ 
             background: "white", 
@@ -760,16 +822,16 @@ export default function App() {
             fontWeight: 700,
             letterSpacing: "2px",
             marginBottom: 16
-          }}>SECURE PHOTOMETRIC READING</div>
-          <div style={{ fontSize: 28, fontWeight: 400, color: "#1A1717", marginBottom: 8, ...sSerif }}>Capture Epidermal Profile</div>
-          <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 16, fontWeight: 300 }}>Generate a clear optical mapping file to parse.</div>
+          }}>PHOTO ASSESSMENT</div>
+          <div style={{ fontSize: 28, fontWeight: 400, color: "#1A1717", marginBottom: 8, ...sSerif }}>Add a skin photo</div>
+          <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 16, fontWeight: 300 }}>Take a photo with your camera or choose one from your device.</div>
           <div style={{ background: "#EBF6F3", borderRadius: 50, padding: "8px 24px", display: "inline-block", fontSize: 11, color: "#0F6E56", fontWeight: 700, border: "1px solid #D5EBE5" }}>
-            Maximum image size limit: 6MB
+            Supported formats: JPEG, PNG, WebP · Maximum size: 6 MB
           </div>
         </div>
         {[
-          { icon: "📷", t: "Access Video Camera", d: "Utilize webcam/camera for high-res direct capture.", type: "camera" },
-          { icon: "☁️", t: "Upload Local Image", d: "Load high-res image from system files.", type: "upload" },
+          { icon: "📷", t: "Use camera", d: "Take a photo with your device camera.", type: "camera" },
+          { icon: "☁️", t: "Upload an image", d: "Choose a photo from your device.", type: "upload" },
         ].map(o => (
           <div key={o.t} className="cap-opt" onClick={o.type === "camera" ? startCamera : () => fileRef2.current?.click()}
             style={{ 
@@ -805,10 +867,11 @@ export default function App() {
           </div>
         ))}
         <div style={{ background: "#1C1717", borderRadius: 20, padding: "20px 24px", marginTop: 14, border: `1px solid ${GOLD}` }}>
-          <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 8 }}>ENCRYPTED DATA PRINCIPLES</div>
-          <div style={{ fontSize: 13, color: "white", fontWeight: 500, marginBottom: 6 }}>🛡️ Immediate Memory Erasure Protocol</div>
-          <div style={{ fontSize: 12, color: "#A89F9F", lineHeight: 1.6, fontWeight: 300 }}>Images are processed strictly locally for analysis vectors and then permanently discarded. Only patient parameters are logged.</div>
+          <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 8 }}>IMAGE AND PRIVACY</div>
+          <div style={{ fontSize: 13, color: "white", fontWeight: 500, marginBottom: 6 }}>Your photo is sent to Gemini for AI observations</div>
+          <div style={{ fontSize: 12, color: "#A89F9F", lineHeight: 1.6, fontWeight: 300 }}>This demonstration does not include patient accounts or a database. Only continue if you are comfortable submitting this image to the configured AI service.</div>
         </div>
+        {uploadError && <div role="alert" style={{ color: "#9B1C31", background: "#FFF2F3", padding: 12, borderRadius: 12, marginTop: 12, fontSize: 13 }}>{uploadError}</div>}
         <input ref={fileRef2} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
         <div style={{ textAlign: "center", marginTop: 20 }}>
           <span onClick={() => setScreen("tips")} style={{ 
@@ -856,7 +919,7 @@ export default function App() {
           letterSpacing: "1px",
           border: "1px solid rgba(194, 162, 120, 0.25)",
           backdropFilter: "blur(8px)" 
-        }}>PROJECTION PHASE</div>
+        }}>CAMERA PREVIEW</div>
       </div>
 
       <div style={{ 
@@ -874,8 +937,8 @@ export default function App() {
         backdropFilter: "blur(8px)",
         whiteSpace: "nowrap" 
       }}>
-        Align your full face in the golden frame<br />
-        <span style={{ fontSize: 10, color: GOLD, fontWeight: 600, letterSpacing: "0.5px", marginTop: 4, display: "block" }}>Hold Still • Keep Neutral Expression</span>
+        Center your face in the frame<br />
+        <span style={{ fontSize: 10, color: GOLD, fontWeight: 600, letterSpacing: "0.5px", marginTop: 4, display: "block" }}>Use even light and hold still</span>
       </div>
 
       {countdown && (
@@ -906,8 +969,8 @@ export default function App() {
           border: `1px solid ${GOLD}`,
           boxShadow: "0 20px 50px rgba(0,0,0,0.3)" 
         }}>
-          <div style={{ fontSize: 18, fontWeight: 500, marginBottom: 8, ...sSerif, color: MAROON }}>Optics Disabled</div>
-          <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 20, lineHeight: 1.6, fontWeight: 300 }}>Camera hardware cannot be accessed. Proceed via local file upload.</div>
+          <div style={{ fontSize: 18, fontWeight: 500, marginBottom: 8, ...sSerif, color: MAROON }}>Camera unavailable</div>
+          <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 20, lineHeight: 1.6, fontWeight: 300 }}>Check browser camera permissions or choose a photo from your device.</div>
           <button onClick={() => { stopCamera(); fileRef2.current?.click(); setScreen("capture-choice"); }} style={{ 
             background: MAROON, 
             color: "white", 
@@ -918,9 +981,10 @@ export default function App() {
             fontSize: 12,
             fontWeight: 700,
             letterSpacing: "1px" 
-          }}>Upload Dermal Image</button>
+          }}>Choose an image</button>
         </div>
       )}
+      {uploadError && <div role="alert" style={{ position: "absolute", bottom: 130, left: 20, right: 20, margin: "auto", maxWidth: 420, background: "white", color: "#9B1C31", padding: 12, borderRadius: 12, textAlign: "center", fontSize: 13 }}>{uploadError}</div>}
 
       <div style={{ position: "absolute", bottom: 44, left: 0, right: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 36 }}>
         <button onClick={() => { stopCamera(); fileRef.current?.click(); }} style={{ 
@@ -962,9 +1026,9 @@ export default function App() {
         </div>
         <div style={{ background: "white", borderRadius: 20, padding: 24, marginBottom: 16, textAlign: "center", border: "1px solid rgba(89, 19, 33, 0.05)", boxShadow: "0 10px 30px rgba(0, 0, 0, 0.02)" }}>
           <div style={{ color: "#0F6E56", fontWeight: 700, fontSize: 15, marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            <span>✓</span> Epidermal Boundary Lock Verified
+            <span>✓</span> Photo ready for review
           </div>
-          <div style={{ fontSize: 13, color: "#6E6565", lineHeight: 1.6, fontWeight: 300 }}>Optics scan confirmed face structures. Prepare file compilation vectors for deep AI analyzer.</div>
+          <div style={{ fontSize: 13, color: "#6E6565", lineHeight: 1.6, fontWeight: 300 }}>Check that the image is clear and well lit before continuing. The AI observations are preliminary and may be inaccurate.</div>
         </div>
         <button onClick={() => setScreen("form")} style={{ 
           width: "100%", 
@@ -1018,15 +1082,15 @@ export default function App() {
             fontWeight: 700,
             letterSpacing: "2px",
             marginBottom: 16
-          }}>PATIENT CLASSIFICATION</div>
-          <div style={{ fontSize: 28, fontWeight: 400, color: "#1A1717", marginBottom: 8, ...sSerif }}>Register Parameters</div>
-          <div style={{ fontSize: 13, color: "#8E8585", fontWeight: 300 }}>Required clinical coordinates to personalize analysis:</div>
+          }}>PATIENT INFORMATION</div>
+          <div style={{ fontSize: 28, fontWeight: 400, color: "#1A1717", marginBottom: 8, ...sSerif }}>A few details</div>
+          <div style={{ fontSize: 13, color: "#8E8585", fontWeight: 300 }}>These details are included in your report, not sent with the image to Gemini.</div>
         </div>
 
         {[{ l: "Your Name", k: "name", p: "Enter patient full name", t: "text" }, { l: "Age", k: "age", p: "Enter patient age", t: "number" }].map(f => (
           <div key={f.k} style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: MAROON, display: "block", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>{f.l}</label>
-            <input type={f.t} placeholder={f.p} value={patient[f.k]} onChange={e => setPatient(p => ({ ...p, [f.k]: e.target.value }))}
+            <input type={f.t} min={f.k === "age" ? "1" : undefined} max={f.k === "age" ? "120" : undefined} required placeholder={f.p} value={patient[f.k]} onChange={e => setPatient(p => ({ ...p, [f.k]: e.target.value }))}
               style={{ 
                 width: "100%", 
                 padding: "14px 18px", 
@@ -1043,8 +1107,8 @@ export default function App() {
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 11, fontWeight: 700, color: MAROON, display: "block", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>Phone Number</label>
           <div style={{ display: "flex", border: "1px solid rgba(89, 19, 33, 0.08)", borderRadius: 12, overflow: "hidden", background: "#FCFAF9" }}>
-            <span style={{ padding: "14px 18px", background: "rgba(89, 19, 33, 0.03)", fontSize: 13, color: "#8E8585", fontWeight: 600, borderRight: "1px solid rgba(89, 19, 33, 0.08)" }}>+91</span>
-            <input type="tel" placeholder="9876543210" value={patient.phone} onChange={e => setPatient(p => ({ ...p, phone: e.target.value }))}
+            <span style={{ padding: "14px 18px", background: "rgba(89, 19, 33, 0.03)", fontSize: 13, color: "#8E8585", fontWeight: 600, borderRight: "1px solid rgba(89, 19, 33, 0.08)" }}>{DOC.countryCode}</span>
+            <input type="tel" required inputMode="tel" maxLength={20} placeholder="9876543210" value={patient.phone} onChange={e => setPatient(p => ({ ...p, phone: e.target.value }))}
               style={{ flex: 1, padding: "14px 18px", border: "none", fontSize: 14, background: "transparent" }} />
           </div>
         </div>
@@ -1052,7 +1116,7 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: MAROON, display: "block", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>City</label>
-            <input type="text" placeholder="e.g., Mumbai" value={patient.city} onChange={e => setPatient(p => ({ ...p, city: e.target.value }))}
+            <input type="text" required placeholder="e.g., Mumbai" value={patient.city} onChange={e => setPatient(p => ({ ...p, city: e.target.value }))}
               style={{ 
                 width: "100%", 
                 padding: "14px 18px", 
@@ -1065,7 +1129,7 @@ export default function App() {
           </div>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: MAROON, display: "block", marginBottom: 8, letterSpacing: "1px", textTransform: "uppercase" }}>State</label>
-            <select value={patient.state} onChange={e => setPatient(p => ({ ...p, state: e.target.value }))}
+            <select required value={patient.state} onChange={e => setPatient(p => ({ ...p, state: e.target.value }))}
               style={{ 
                 width: "100%", 
                 padding: "14px 18px", 
@@ -1076,6 +1140,7 @@ export default function App() {
                 boxSizing: "border-box", 
                 color: "#1A1717" 
               }}>
+              <option value="">Select a state</option>
               {IND_STATES.map(st => <option key={st}>{st}</option>)}
             </select>
           </div>
@@ -1084,28 +1149,30 @@ export default function App() {
         <div style={{ background: PEARL, border: `1px solid rgba(194, 162, 120, 0.3)`, borderRadius: 16, padding: 18, marginBottom: 28, display: "flex", gap: 14 }}>
           <span style={{ fontSize: 24, flexShrink: 0 }}>🛡️</span>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: MAROON, marginBottom: 4 }}>Encrypted Metadata Loop</div>
-            <div style={{ fontSize: 12, color: "#6E6565", lineHeight: 1.6, fontWeight: 300 }}>Secure clinical layers process vectors via Anthropic Claude keys. Zero permanent pixel retention logs, satisfying strict bio-privacy laws.</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: MAROON, marginBottom: 4 }}>Image processing</div>
+            <div style={{ fontSize: 12, color: "#6E6565", lineHeight: 1.6, fontWeight: 300 }}>Your image is sent to Gemini through the app’s server endpoint for analysis. Patient name, age, phone, and location are not included in that request.</div>
           </div>
         </div>
 
-        <button onClick={startAnalysis} disabled={!patient.name || !patient.age}
+        {analysisError && <div role="alert" style={{ color: "#9B1C31", background: "#FFF2F3", padding: 14, borderRadius: 12, marginBottom: 16, fontSize: 13 }}>{analysisError}</div>}
+
+        <button onClick={startAnalysis} disabled={!isPatientFormValid}
           style={{ 
             width: "100%", 
-            background: patient.name && patient.age ? MAROON : "#E5E4E4", 
-            color: patient.name && patient.age ? "white" : "#A29F9F", 
-            border: patient.name && patient.age ? `1px solid ${GOLD}` : "none", 
+            background: isPatientFormValid ? MAROON : "#E5E4E4",
+            color: isPatientFormValid ? "white" : "#A29F9F",
+            border: isPatientFormValid ? `1px solid ${GOLD}` : "none",
             borderRadius: 14, 
             padding: 18, 
             fontSize: 13, 
             fontWeight: 700, 
             letterSpacing: "1.5px",
             textTransform: "uppercase",
-            cursor: patient.name && patient.age ? "pointer" : "not-allowed", 
-            boxShadow: patient.name && patient.age ? "0 10px 25px -5px rgba(89, 19, 33, 0.2)" : "none",
+            cursor: isPatientFormValid ? "pointer" : "not-allowed",
+            boxShadow: isPatientFormValid ? "0 10px 25px -5px rgba(89, 19, 33, 0.2)" : "none",
             transition: "all 0.3s" 
           }}>
-          Start AI Clinical Analysis
+          Generate Preliminary AI Observations
         </button>
       </div>
     </div>
@@ -1113,8 +1180,8 @@ export default function App() {
 
   // ═══ SCANNING ═══
   if (screen === "scanning") return (
-    <div style={{ minHeight: "100vh", background: "white", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, ...s }}>
-      <style>{"@keyframes scanLine{0%{top:0%}100%{top:100%}} @keyframes glowPulse{0%,100%{box-shadow: 0 0 20px rgba(194, 162, 120, 0.25)} 50%{box-shadow: 0 0 35px rgba(194, 162, 120, 0.5)}}"}</style>
+    <div aria-busy="true" style={{ minHeight: "100vh", background: "white", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, ...s }}>
+      <style>{"@keyframes scanLine{0%{top:0%}100%{top:100%}} @keyframes glowPulse{0%,100%{box-shadow: 0 0 20px rgba(194, 162, 120, 0.25)} 50%{box-shadow: 0 0 35px rgba(194, 162, 120, 0.5)}} @keyframes loadingBar{0%{transform:translateX(-120%)}100%{transform:translateX(300%)}}"}</style>
       <div style={{ maxWidth: 440, width: "100%", textAlign: "center" }}>
         <div className="step-icon-glow" style={{ 
           position: "relative", 
@@ -1140,15 +1207,15 @@ export default function App() {
           <div style={{ position: "absolute", inset: 0, background: "rgba(194, 162, 120, 0.06)" }} />
         </div>
 
-        <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", marginBottom: 6, ...sSerif }}>Compiling Epidermal Vectors...</div>
-        <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 20, fontWeight: 300 }}>Deep AI is extracting condition percentages</div>
+        <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", marginBottom: 6, ...sSerif }}>Preparing your observations...</div>
+        <div style={{ fontSize: 13, color: "#8E8585", marginBottom: 20, fontWeight: 300 }}>The image is being reviewed by the configured Gemini AI service.</div>
 
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span style={{ fontSize: 11, color: GOLD, fontWeight: 700, letterSpacing: "1px" }}>CELLULAR SCANNER</span>
-          <span style={{ fontSize: 11, color: MAROON, fontWeight: 700 }}>{Math.round(progress)}% COMPLETE</span>
+          <span style={{ fontSize: 11, color: GOLD, fontWeight: 700, letterSpacing: "1px" }}>AI ASSESSMENT</span>
+          <span style={{ fontSize: 11, color: MAROON, fontWeight: 700 }}>WAITING FOR RESPONSE</span>
         </div>
-        <div style={{ background: "#F5F1EC", borderRadius: 10, height: 7, marginBottom: 28, overflow: "hidden", border: "1px solid rgba(89, 19, 33, 0.03)" }}>
-          <div style={{ background: `linear-gradient(90deg, ${GOLD} 0%, ${MAROON} 100%)`, height: "100%", width: `${progress}%`, transition: "width 0.4s ease" }} />
+        <div role="progressbar" aria-label="Waiting for AI assessment" style={{ background: "#F5F1EC", borderRadius: 10, height: 7, marginBottom: 28, overflow: "hidden", border: "1px solid rgba(89, 19, 33, 0.03)" }}>
+          <div style={{ background: `linear-gradient(90deg, ${GOLD} 0%, ${MAROON} 100%)`, height: "100%", width: "40%", animation: "loadingBar 1.4s ease-in-out infinite" }} />
         </div>
 
         <div style={{ 
@@ -1169,19 +1236,12 @@ export default function App() {
   );
 
   // ═══ RESULTS ═══
-  if (screen === "results" && results) {
+  if (screen === "results" && results && assessment) {
     const primary = results.conditions[0];
-    const sevColor = results.severityIndex === "Low" ? "#16a34a" : results.severityIndex === "Moderate" ? "#d97706" : "#dc2626";
-    const sevBg = results.severityIndex === "Low" ? "#f0faf0" : results.severityIndex === "Moderate" ? "#fffbeb" : "#fff5f5";
-    const barColor = p => p >= 50 ? "#dc2626" : p >= 30 ? "#d97706" : "#16a34a";
-    const barGradient = p => p >= 50 
-      ? "linear-gradient(90deg, #E5E4E4 0%, #dc2626 100%)" 
-      : p >= 30 
-        ? "linear-gradient(90deg, #E5E4E4 0%, #d97706 100%)" 
-        : "linear-gradient(90deg, #E5E4E4 0%, #16a34a 100%)";
+    const { patient: assessedPatient, dermatologist, assessmentDate } = assessment;
 
     return (
-      <div style={{ minHeight: "100vh", background: "#FAF8F6", paddingBottom: 100, ...s }}>
+      <div style={{ minHeight: "100vh", background: "#FAF8F6", paddingBottom: isMobile ? 170 : 100, ...s }}>
         <style>{"@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}"}</style>
 
         {/* Header */}
@@ -1198,19 +1258,16 @@ export default function App() {
           zIndex: 100 
         }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#1A1717", letterSpacing: "-0.2px" }}>Epidermal Indices</div>
-            <div style={{ fontSize: 11, color: "#8E8585", fontWeight: 500 }}>{patient.name.toUpperCase()} • {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1A1717", letterSpacing: "-0.2px" }}>{PRODUCT_NAME} · Preliminary observations</div>
+            <div style={{ fontSize: 11, color: "#8E8585", fontWeight: 500 }}>{assessedPatient.name.toUpperCase()} • {formatDate(assessmentDate)}</div>
           </div>
-          <div style={{ 
-            background: sevBg, 
-            color: sevColor, 
-            padding: "6px 18px", 
-            borderRadius: 20, 
-            fontSize: 11, 
-            fontWeight: 800, 
-            letterSpacing: "1px",
-            border: `1px solid rgba(0,0,0,0.03)` 
-          }}>{results.severityIndex.toUpperCase()} SEVERITY</div>
+          <div style={{ color: MAROON, background: PEARL, padding: "6px 12px", borderRadius: 20, fontSize: 10, fontWeight: 700 }}>AI-GENERATED · NOT A DIAGNOSIS</div>
+        </div>
+
+        <div role="note" style={{ maxWidth: 1024, margin: "16px auto 0", padding: isMobile ? "0 16px" : "0 24px" }}>
+          <div style={{ padding: 14, background: "#FBF7F1", border: "1px solid rgba(194, 162, 120, 0.45)", borderRadius: 14, color: "#4A4444", fontSize: 12, lineHeight: 1.6 }}>
+            {MEDICAL_DISCLAIMER}
+          </div>
         </div>
 
         <div style={{ 
@@ -1249,22 +1306,22 @@ export default function App() {
                 boxShadow: "0 10px 25px rgba(89, 19, 33, 0.02)"
               }}>
                 <span style={{ fontSize: 32 }}>🤖</span>
-                <div style={{ fontSize: 10, color: MAROON, fontWeight: 700, letterSpacing: "1.5px", textAlign: "center", lineHeight: 1.4 }}>AI CONVOLUTION<br/>PROFILE</div>
+                <div style={{ fontSize: 10, color: MAROON, fontWeight: 700, letterSpacing: "1.5px", textAlign: "center", lineHeight: 1.4 }}>{results.skinType.toUpperCase()}<br/>ESTIMATED SKIN TYPE</div>
               </div>
             </div>
 
             {/* Primary Concern */}
             <div style={{ 
               background: "linear-gradient(135deg, #FFF9F9 0%, #FFF2F3 100%)", 
-              border: "1px solid #FECACA", 
+              border: "1px solid #F2DFD9",
               borderRadius: 24, 
               padding: 24,
               boxShadow: "0 15px 35px -10px rgba(220, 38, 38, 0.04)" 
             }}>
-              <div style={{ fontSize: 9, color: "#F97316", letterSpacing: 2, fontWeight: 700, marginBottom: 8 }}>PRIMARY EPIDERMAL marker</div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+              <div style={{ fontSize: 9, color: "#8D6B49", letterSpacing: 2, fontWeight: 700, marginBottom: 8 }}>PRIMARY VISIBLE OBSERVATION</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10, gap: 8 }}>
                 <div style={{ fontSize: 24, fontWeight: 400, color: "#1A1717", ...sSerif }}>{primary?.name}</div>
-                <div style={{ fontSize: 28, fontWeight: 800, color: "#dc2626" }}>{primary?.percentage}%</div>
+                {primary?.severity && <div style={{ fontSize: 11, fontWeight: 700, color: "#8D6B49", whiteSpace: "nowrap" }}>{primary.severity} estimate</div>}
               </div>
               <div style={{ fontSize: 13, color: "#5F5555", lineHeight: 1.7, fontWeight: 300 }}>{primary?.description}</div>
             </div>
@@ -1311,17 +1368,11 @@ export default function App() {
               }}>
                 {results.conditions.map((c, i) => (
                   <div key={c.name} style={{ marginBottom: i < results.conditions.length - 1 ? 24 : 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
                       <span style={{ fontSize: 15, fontWeight: 600, color: "#1A1717" }}>{c.name}</span>
-                      <span style={{ fontSize: 15, fontWeight: 800, color: barColor(c.percentage) }}>{c.percentage}%</span>
+                      {c.severity && <span style={{ fontSize: 11, fontWeight: 700, color: "#8D6B49", whiteSpace: "nowrap" }}>{c.severity} estimate</span>}
                     </div>
-                    <div style={{ background: "#F5F1EC", borderRadius: 10, height: 8, overflow: "hidden" }}>
-                      <div style={{ background: barGradient(c.percentage), height: "100%", borderRadius: 10, width: `${c.percentage}%`, transition: "width 1s ease " + i * 0.1 + "s" }} />
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                      <span style={{ fontSize: 11, color: GOLD, fontWeight: 700, letterSpacing: "1px" }}>{c.severity.toUpperCase()} IMPACT</span>
-                      <span style={{ fontSize: 11, color: "#8E8585", fontWeight: 300 }}>Indicator Index</span>
-                    </div>
+                    <div style={{ fontSize: 13, color: "#6E6565", lineHeight: 1.6 }}>{c.description}</div>
                   </div>
                 ))}
               </div>
@@ -1338,7 +1389,7 @@ export default function App() {
                 animation: "fadeUp 0.3s ease" 
               }}>
                 <div style={{ marginBottom: 28 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#F97316", marginBottom: 16, letterSpacing: "1.5px", textTransform: "uppercase", borderBottom: "1px solid #F3EEE9", paddingBottom: 8 }}>☀️ Morning Cellular Regimen</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#F97316", marginBottom: 16, letterSpacing: "1.5px", textTransform: "uppercase", borderBottom: "1px solid #F3EEE9", paddingBottom: 8 }}>☀️ Suggested Morning Skincare Routine</div>
                   {results.morningRoutine.map((step, i) => (
                     <div key={i} style={{ display: "flex", gap: 14, marginBottom: 14, alignItems: "flex-start" }}>
                       <div style={{ 
@@ -1360,7 +1411,7 @@ export default function App() {
                   ))}
                 </div>
                 <div style={{ borderTop: "1px solid #F3EEE9", paddingTop: 24 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", marginBottom: 16, letterSpacing: "1.5px", textTransform: "uppercase", borderBottom: "1px solid #F3EEE9", paddingBottom: 8 }}>🌙 Evening Regenerative Regimen</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", marginBottom: 16, letterSpacing: "1.5px", textTransform: "uppercase", borderBottom: "1px solid #F3EEE9", paddingBottom: 8 }}>🌙 Suggested Evening Skincare Routine</div>
                   {results.eveningRoutine.map((step, i) => (
                     <div key={i} style={{ display: "flex", gap: 14, marginBottom: 14, alignItems: "flex-start" }}>
                       <div style={{ 
@@ -1395,11 +1446,11 @@ export default function App() {
                 animation: "fadeUp 0.3s ease" 
               }}>
                 <div style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 10 }}>PHYSICIAN DISCOVERIES</div>
-                  <div style={{ fontSize: 14, color: "#1A1717", lineHeight: 1.8, fontStyle: "italic", fontWeight: 300 }}>"{results.physicianSummary}"</div>
+                  <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 10 }}>PRELIMINARY ASSESSMENT SUMMARY</div>
+                  <div style={{ fontSize: 14, color: "#1A1717", lineHeight: 1.8, fontWeight: 300 }}>{results.summary}</div>
                 </div>
                 <div style={{ background: PEARL, borderRadius: 16, padding: 20, border: `1px solid rgba(194, 162, 120, 0.2)` }}>
-                  <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 10 }}>THERAPEUTIC DIRECTIVES</div>
+                  <div style={{ fontSize: 9, color: GOLD, letterSpacing: 2, fontWeight: 700, marginBottom: 10 }}>DERMATOLOGIST CONSULTATION</div>
                   <div style={{ fontSize: 13, color: "#4A4444", lineHeight: 1.8, fontWeight: 300 }}>{results.followUpAdvice}</div>
                 </div>
                 <div style={{ 
@@ -1425,14 +1476,18 @@ export default function App() {
                     fontSize: 20
                   }}>👨‍⚕️</div>
                   <div>
-                    <div style={{ fontSize: 14, fontWeight: 500, color: "white", ...sSerif }}>{DOC.name}</div>
-                    <div style={{ fontSize: 11, color: GOLD, fontWeight: 600 }}>{DOC.clinic.toUpperCase()} · {DOC.city.toUpperCase()}</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: "white", ...sSerif }}>{dermatologist.doctorName || "Dermatologist"}</div>
+                    <div style={{ fontSize: 11, color: GOLD, fontWeight: 600 }}>{[dermatologist.clinicName, dermatologist.city].filter(Boolean).join(" · ").toUpperCase()}</div>
+                    {dermatologist.phone && <div style={{ fontSize: 11, color: "white", marginTop: 4 }}>{dermatologist.countryCode} {dermatologist.phone}</div>}
+                    {dermatologist.email && <div style={{ fontSize: 11, color: "white", marginTop: 2 }}>{dermatologist.email}</div>}
                   </div>
                 </div>
               </div>
             )}
           </div>
         </div>
+
+        {reportError && <div role="alert" style={{ position: "fixed", bottom: isMobile ? 150 : 94, left: 16, right: 16, zIndex: 110, maxWidth: 680, margin: "0 auto", padding: 12, borderRadius: 12, background: "#FFF2F3", color: "#9B1C31", textAlign: "center", fontSize: 13 }}>{reportError}</div>}
 
         {/* Bottom CTA */}
         <div style={{ 
@@ -1453,9 +1508,17 @@ export default function App() {
             maxWidth: isMobile ? "100%" : 768, 
             margin: "0 auto", 
             display: "flex", 
-            gap: 12 
+            flexDirection: isMobile ? "column" : "row",
+            gap: 12
           }}>
-            <button onClick={() => openPDFReport(patient, results, capturedImage)}
+              <button onClick={() => {
+                try {
+                  openPDFReport(assessedPatient, results, capturedImage, assessmentDate, dermatologist);
+                  setReportError("");
+                } catch (error) {
+                  setReportError(error instanceof Error ? error.message : "The report could not be opened.");
+                }
+              }}
               style={{ 
                 flex: 1, 
                 background: MAROON, 
@@ -1474,9 +1537,9 @@ export default function App() {
                 gap: 8,
                 boxShadow: "0 10px 25px -5px rgba(89, 19, 33, 0.15)"
               }}>
-              📥 Download Diagnostic PDF
+              📥 Download / Print Report
             </button>
-            <button onClick={() => window.open(`https://wa.me/${DOC.wa}?text=Hi%20${encodeURIComponent(DOC.name)}%2C%20I%20just%20completed%20my%20AI%20skin%20analysis.%20Primary%20concern%3A%20${encodeURIComponent(results.primaryConcern)}%20(${encodeURIComponent(results.severityIndex)}%20severity).%20I%20would%20like%20to%20book%20a%20consultation.`, "_blank")}
+            {dermatologist.whatsapp && <button onClick={() => window.open(`https://wa.me/${dermatologist.whatsapp}?text=${encodeURIComponent(`Hello, I would like to book a dermatologist consultation through ${PRODUCT_NAME}.`)}`, "_blank", "noopener,noreferrer")}
               style={{ 
                 flex: 1, 
                 background: "#1C1717", 
@@ -1495,8 +1558,8 @@ export default function App() {
                 gap: 8,
                 boxShadow: "0 10px 25px -5px rgba(0,0,0,0.15)"
               }}>
-              💬 Book Consultation via WA
-            </button>
+              💬 Book a consultation on WhatsApp
+            </button>}
           </div>
         </div>
       </div>
