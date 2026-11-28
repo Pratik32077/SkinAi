@@ -10,14 +10,13 @@ Update the demonstration dermatologist and clinic values in [`src/config/clinic.
 
 ## Gemini configuration
 
-Gemini requests use the official `@google/genai` SDK and the vision-capable `gemini-3.8-flash` model through the Vercel serverless function at `api/analyze-skin.js`. Never put a Gemini key in frontend code or a `VITE_` variable.
+Gemini requests use the official `@google/genai` SDK on the server side through `api/analyze-skin.js` (`gemini-3.1-flash-lite` for pre-scan face and image quality validation, and `gemini-4-hydrogen` with automatic cross-model fallback and exponential-backoff retries for skin observations). Never put a Gemini key in frontend code or a `VITE_` variable.
 
-1. Revoke and replace any Gemini key that was previously placed in browser-accessible source.
-2. Set `GEMINI_API_KEY` in the Vercel project’s server-side Environment Variables.
-3. For local serverless testing, copy `.env.example` to `.env.local`, set the key there, then run `npx vercel dev`.
-4. `npm run dev` starts the Vite frontend only; it does not serve the Vercel `/api/analyze-skin` function.
+1. Set `GEMINI_API_KEY` in Vercel under **Project Settings → Environment Variables** for **Production**, **Preview**, and **Development**.
+2. For local development, copy `.env.example` to `.env.local` (or `.env`), set `GEMINI_API_KEY`, and run `npm run dev` (which starts `server.js` serving both the Vite frontend and `/api/analyze-skin` on port 3000).
+3. `vercel.json` configures `maxDuration: 60` for `api/analyze-skin.js` so multi-stage requests and temporary error retries complete reliably on Vercel.
 
-The browser resizes images before submission. The API accepts JPEG, PNG, and WebP images up to 2.5 MB after resizing, and checks their file signatures. Patient name, age, phone, and location are not sent to Gemini; the image is.
+The browser resizes images before submission. The API accepts JPEG, PNG, and WebP images up to 2.5 MB after resizing, and checks their file signatures. Patient name, age, phone, and location are not sent to Gemini; only the image is.
 
 ## Demonstration scope and privacy
 
@@ -34,4 +33,4 @@ npm run lint
 npm run build
 ```
 
-Deploy the Vite app and `api/` function to Vercel. Add `GEMINI_API_KEY` as a server-side environment variable in each required Vercel environment, then redeploy. A real Gemini result cannot be shown until a valid key is configured and an image is submitted through the deployed function.
+Deploy the Vite app and `api/` function to Vercel. Add `GEMINI_API_KEY` as a server-side environment variable in **Project Settings → Environment Variables** (Production, Preview, and Development), then redeploy.

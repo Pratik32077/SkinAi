@@ -89,6 +89,13 @@ const PHOTOGRAPHY_GUIDELINES = [
   { title: "Keep skin clean and natural", detail: "Avoid beauty filters, heavy makeup, or hair covering facial regions." },
 ];
 
+const ANALYSIS_STAGES = [
+  { key: "processing", label: "Image Processing", detail: "Validating format and optimizing facial photograph..." },
+  { key: "validation", label: "Image Validation", detail: "Verifying human face, lighting, clarity, and eyewear..." },
+  { key: "assessment", label: "AI Assessment", detail: "Reviewing visible facial skin characteristics with Gemini AI..." },
+  { key: "report", label: "Report Preparation", detail: "Preparing preliminary observations and visual report..." },
+];
+
 let cachedLogoDataUrl = null;
 
 async function getEmbeddedLogoSrc() {
@@ -660,10 +667,11 @@ export default function App() {
   const [reportError, setReportError] = useState("");
   const [validationResult, setValidationResult] = useState(null);
   const [preparedImage, setPreparedImage] = useState(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progressState, setProgressState] = useState({
-    percent: 10,
-    stage: "Validating uploaded image...",
-    waitingForApi: false,
+    stageIndex: 0,
+    detail: ANALYSIS_STAGES[0].detail,
+    completed: false,
   });
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
@@ -682,6 +690,7 @@ export default function App() {
   const animRef = useRef(null);
   const fileRef = useRef(null);
   const fileRef2 = useRef(null);
+  const analysisInFlightRef = useRef(false);
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
@@ -828,7 +837,13 @@ export default function App() {
     setScreen("landing");
   };
 
-  const runSkinAnalysisStage = async (imageToAnalyze, validationInfo) => {
+  const runSkinAnalysisStage = async (imageToAnalyze, validationInfo, options = {}) => {
+    if (!options.fromStartAnalysis) {
+      if (analysisInFlightRef.current) return;
+      analysisInFlightRef.current = true;
+      setIsAnalyzing(true);
+    }
+
     setAnalysisError("");
     setScreen("scanning");
     setTipIdx(0);
@@ -839,15 +854,9 @@ export default function App() {
 
     try {
       setProgressState({
-        percent: 55,
-        stage: "Facial regions verified — checking lighting and clarity...",
-        waitingForApi: false,
-      });
-
-      setProgressState({
-        percent: 70,
-        stage: "Reviewing visible skin characteristics with Gemini AI...",
-        waitingForApi: true,
+        stageIndex: 2,
+        detail: ANALYSIS_STAGES[2].detail,
+        completed: false,
       });
 
       const { result: data, requestId } = await analyzeWithAI(imageToAnalyze, {
@@ -858,9 +867,9 @@ export default function App() {
       });
 
       setProgressState({
-        percent: 90,
-        stage: "Preparing preliminary observations and visual scores...",
-        waitingForApi: false,
+        stageIndex: 3,
+        detail: ANALYSIS_STAGES[3].detail,
+        completed: false,
       });
 
       setResults(data);
@@ -873,11 +882,11 @@ export default function App() {
       });
 
       setProgressState({
-        percent: 100,
-        stage: "Organizing your DermaLens AI skin wellness report...",
-        waitingForApi: false,
+        stageIndex: 3,
+        detail: "Your preliminary skin assessment and report are ready.",
+        completed: true,
       });
-      await new Promise(resolve => setTimeout(resolve, 260));
+      await new Promise(resolve => setTimeout(resolve, 350));
       setActiveTab("results");
       setReportNotice("");
       setReportError("");
@@ -889,7 +898,7 @@ export default function App() {
           code: "NO_FACE",
           title: "No human face detected.",
           message:
-            "DermaLens AI can analyze facial skin images only. Please upload or capture a clear photograph of your face.",
+            "DermaLens AI can analyze facial skin images only. Please upload a clear face photograph.",
         });
         setScreen("validation-issue");
         return;
@@ -900,10 +909,17 @@ export default function App() {
       setScreen("form");
     } finally {
       clearInterval(tipIv);
+      if (!options.fromStartAnalysis) {
+        analysisInFlightRef.current = false;
+        setIsAnalyzing(false);
+      }
     }
   };
 
   const startAnalysis = async () => {
+    if (analysisInFlightRef.current || !isPatientFormValid) return;
+    analysisInFlightRef.current = true;
+    setIsAnalyzing(true);
     setAnalysisError("");
     setScreen("scanning");
     setTipIdx(0);
@@ -912,24 +928,18 @@ export default function App() {
 
     try {
       setProgressState({
-        percent: 10,
-        stage: "Validating uploaded image...",
-        waitingForApi: false,
+        stageIndex: 0,
+        detail: ANALYSIS_STAGES[0].detail,
+        completed: false,
       });
 
       const compressed = preparedImage || (await compressImageForAnalysis(capturedImage));
       setPreparedImage(compressed);
 
       setProgressState({
-        percent: 25,
-        stage: "Preparing facial image for detection...",
-        waitingForApi: false,
-      });
-
-      setProgressState({
-        percent: 40,
-        stage: "Detecting human face and assessing image quality...",
-        waitingForApi: true,
+        stageIndex: 1,
+        detail: ANALYSIS_STAGES[1].detail,
+        completed: false,
       });
 
       const validation = await validateFaceWithAI(compressed);
@@ -948,13 +958,16 @@ export default function App() {
       }
 
       clearInterval(tipIv);
-      await runSkinAnalysisStage(compressed, validation);
+      await runSkinAnalysisStage(compressed, validation, { fromStartAnalysis: true });
     } catch (error) {
       clearInterval(tipIv);
       setAnalysisError(
         error instanceof Error ? error.message : "The assessment could not be completed. Please try again.",
       );
       setScreen("form");
+    } finally {
+      analysisInFlightRef.current = false;
+      setIsAnalyzing(false);
     }
   };
 
@@ -2352,32 +2365,41 @@ export default function App() {
                   borderRadius: 12,
                   marginBottom: 16,
                   fontSize: 13,
+                  lineHeight: 1.5,
                 }}
               >
-                {analysisError}
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>Unable to Complete Analysis</div>
+                <div>{analysisError}</div>
+                <div style={{ fontSize: 12, color: TEXT_BODY, marginTop: 6 }}>
+                  Your uploaded photo and entered details are preserved—tap Retry below when ready.
+                </div>
               </div>
             )}
 
             <button
               type="button"
               onClick={startAnalysis}
-              disabled={!isPatientFormValid}
+              disabled={!isPatientFormValid || isAnalyzing}
               style={{
                 width: "100%",
-                background: isPatientFormValid ? MAROON : "#E5E2DF",
-                color: isPatientFormValid ? "#FFFFFF" : "#8F8A88",
-                border: isPatientFormValid ? `1px solid ${GOLD}` : "1px solid transparent",
+                background: isPatientFormValid && !isAnalyzing ? MAROON : "#E5E2DF",
+                color: isPatientFormValid && !isAnalyzing ? "#FFFFFF" : "#8F8A88",
+                border: isPatientFormValid && !isAnalyzing ? `1px solid ${GOLD}` : "1px solid transparent",
                 borderRadius: 999,
                 padding: "16px 24px",
                 fontSize: 13.5,
                 fontWeight: 700,
                 letterSpacing: "0.8px",
                 textTransform: "uppercase",
-                cursor: isPatientFormValid ? "pointer" : "not-allowed",
-                boxShadow: isPatientFormValid ? "0 10px 24px -6px rgba(89, 19, 33, 0.25)" : "none",
+                cursor: isPatientFormValid && !isAnalyzing ? "pointer" : "not-allowed",
+                boxShadow: isPatientFormValid && !isAnalyzing ? "0 10px 24px -6px rgba(89, 19, 33, 0.25)" : "none",
               }}
             >
-              Validate Face &amp; Analyze Skin
+              {isAnalyzing
+                ? "Analyzing..."
+                : analysisError
+                  ? "Retry Face Validation & Analysis"
+                  : "Validate Face & Analyze Skin"}
             </button>
           </div>
         </main>
@@ -2453,12 +2475,29 @@ export default function App() {
                   padding: "10px 14px",
                   fontSize: 12.5,
                   color: TEXT_MUTED,
-                  marginBottom: 20,
+                  marginBottom: 14,
                 }}
               >
                 Detected subject: <strong style={{ color: TEXT_HEADING }}>{validationResult.detectedSubject}</strong>
               </div>
             )}
+
+            <div
+              style={{
+                background: "#FAF7F5",
+                border: "1px solid rgba(194, 162, 120, 0.35)",
+                borderRadius: 14,
+                padding: "12px 14px",
+                textAlign: "left",
+                fontSize: 12.5,
+                color: TEXT_BODY,
+                lineHeight: 1.55,
+                marginBottom: 20,
+              }}
+            >
+              <strong style={{ color: MAROON, display: "block", marginBottom: 4 }}>Tips for a clear photo:</strong>
+              Remove glasses, face the camera directly, use even natural lighting, and avoid harsh shadows.
+            </div>
 
             <div style={{ display: "grid", gap: 10 }}>
               <button
@@ -2605,6 +2644,7 @@ export default function App() {
               </button>
               <button
                 type="button"
+                disabled={isAnalyzing}
                 onClick={() => runSkinAnalysisStage(preparedImage, validationResult)}
                 style={{
                   width: "100%",
@@ -2615,10 +2655,11 @@ export default function App() {
                   padding: "14px 22px",
                   fontSize: 13,
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: isAnalyzing ? "not-allowed" : "pointer",
+                  opacity: isAnalyzing ? 0.65 : 1,
                 }}
               >
-                Proceed With Recorded Limitation
+                {isAnalyzing ? "Analyzing..." : "Proceed With Recorded Limitation"}
               </button>
             </div>
           </div>
@@ -2627,16 +2668,22 @@ export default function App() {
     );
 
   // ═══ SCANNING / PROGRESS SCREEN ═══
-  if (screen === "scanning")
+  if (screen === "scanning") {
+    const activeStage = ANALYSIS_STAGES[progressState.stageIndex] || ANALYSIS_STAGES[0];
     return (
       <div
-        aria-busy="true"
+        aria-busy={!progressState.completed}
         style={{ minHeight: "100vh", background: PEARL, display: "flex", flexDirection: "column", ...s }}
       >
         <TopNavBar onHome={resetToHome} />
         <style>{`
           @keyframes scanLine { 0% { top: 0%; } 100% { top: 100%; } }
-          @keyframes activeShimmer { 0% { opacity: 0.55; } 50% { opacity: 1; } 100% { opacity: 0.55; } }
+          @keyframes smoothSlide {
+            0% { transform: translateX(-65%); }
+            50% { transform: translateX(45%); }
+            100% { transform: translateX(165%); }
+          }
+          @keyframes stagePulse { 0%, 100% { opacity: 0.45; transform: scale(0.95); } 50% { opacity: 1; transform: scale(1.1); } }
         `}</style>
         <main
           style={{
@@ -2664,7 +2711,7 @@ export default function App() {
                 position: "relative",
                 width: 210,
                 height: 245,
-                margin: "0 auto 26px",
+                margin: "0 auto 24px",
                 borderRadius: 22,
                 overflow: "hidden",
                 border: `2px solid ${GOLD}`,
@@ -2672,67 +2719,144 @@ export default function App() {
               }}
             >
               <img src={capturedImage} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="Scanning face" />
-              <div
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  height: 3,
-                  background: `linear-gradient(to right, transparent, ${GOLD}, transparent)`,
-                  animation: "scanLine 2.4s linear infinite",
-                  boxShadow: `0 0 10px ${GOLD}`,
-                }}
-              />
+              {!progressState.completed && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    height: 3,
+                    background: `linear-gradient(to right, transparent, ${GOLD}, transparent)`,
+                    animation: "scanLine 2.4s linear infinite",
+                    boxShadow: `0 0 10px ${GOLD}`,
+                  }}
+                />
+              )}
+            </div>
+
+            <div
+              className="tabular-nums"
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "1.2px",
+                textTransform: "uppercase",
+                color: "#8D6B49",
+                marginBottom: 6,
+              }}
+            >
+              {progressState.completed
+                ? "Assessment Complete · 100%"
+                : `Stage ${progressState.stageIndex + 1} of ${ANALYSIS_STAGES.length} · ${activeStage.label}`}
             </div>
 
             <h1
               className="tabular-nums"
               style={{ fontSize: 24, fontWeight: 500, color: TEXT_HEADING, margin: "0 0 6px", ...sSerif }}
             >
-              Analyzing Your Skin – {progressState.percent}%
+              {progressState.completed ? "Report Ready – 100%" : "Analyzing Your Skin"}
             </h1>
             <p style={{ fontSize: 13.5, color: MAROON, fontWeight: 600, margin: "0 0 18px", minHeight: 20 }}>
-              {progressState.stage}
+              {progressState.detail}
             </p>
 
             <div
               role="progressbar"
-              aria-label="Skin analysis progress"
+              aria-label="Skin analysis status"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={progressState.percent}
+              aria-valuenow={progressState.completed ? 100 : undefined}
               style={{
+                position: "relative",
                 background: "#F1EAE4",
                 borderRadius: 999,
                 height: 10,
-                marginBottom: 14,
+                marginBottom: 18,
                 overflow: "hidden",
                 border: "1px solid rgba(89, 19, 33, 0.06)",
               }}
             >
-              <div
-                style={{
-                  background: `linear-gradient(90deg, ${GOLD} 0%, ${MAROON} 100%)`,
-                  height: "100%",
-                  width: `${progressState.percent}%`,
-                  transition: "width 0.35s ease",
-                  animation: progressState.waitingForApi ? "activeShimmer 1.4s ease-in-out infinite" : "none",
-                }}
-              />
+              {progressState.completed ? (
+                <div
+                  style={{
+                    background: `linear-gradient(90deg, ${GOLD} 0%, ${MAROON} 100%)`,
+                    height: "100%",
+                    width: "100%",
+                    transition: "width 0.35s ease",
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    background: `linear-gradient(90deg, transparent 0%, ${GOLD} 30%, ${MAROON} 70%, transparent 100%)`,
+                    height: "100%",
+                    width: "45%",
+                    borderRadius: 999,
+                    animation: "smoothSlide 1.8s ease-in-out infinite",
+                  }}
+                />
+              )}
             </div>
 
             <div
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 11.5,
-                color: TEXT_MUTED,
-                marginBottom: 24,
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)",
+                gap: 8,
+                marginBottom: 22,
+                textAlign: "left",
               }}
             >
-              <span>1. Face &amp; Quality</span>
-              <span>2. Skin Analysis</span>
-              <span>3. Report Ready</span>
+              {ANALYSIS_STAGES.map((stage, idx) => {
+                const isDone = progressState.completed || idx < progressState.stageIndex;
+                const isActive = !progressState.completed && idx === progressState.stageIndex;
+                return (
+                  <div
+                    key={stage.key}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 12,
+                      background: isDone ? "#FAF7F5" : isActive ? BLUSH : "#FAFAFA",
+                      border: isActive
+                        ? `1px solid ${GOLD}`
+                        : isDone
+                          ? "1px solid rgba(89, 19, 33, 0.14)"
+                          : "1px solid rgba(0, 0, 0, 0.05)",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <span
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: "50%",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 9.5,
+                          fontWeight: 700,
+                          background: isDone ? MAROON : isActive ? GOLD : "#E5E2DF",
+                          color: "#FFFFFF",
+                          animation: isActive ? "stagePulse 1.3s ease-in-out infinite" : "none",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isDone ? "✓" : idx + 1}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: isActive || isDone ? 700 : 500,
+                          color: isActive || isDone ? MAROON : TEXT_MUTED,
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {stage.label}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             <div
@@ -2762,6 +2886,7 @@ export default function App() {
         </main>
       </div>
     );
+  }
 
   // ═══ RESULTS ═══
   if (screen === "results" && results && assessment) {

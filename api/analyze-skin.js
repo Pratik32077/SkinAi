@@ -5,9 +5,12 @@ import { env } from 'node:process'
 
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024
 const MAX_REQUEST_LENGTH = 4_000_000
-const GEMINI_TIMEOUT_MS = 35_000
-const MAX_TOTAL_RETRY_MS = 45_000
-const RETRY_BASE_DELAY_MS = 800
+const GEMINI_TIMEOUT_MS = 26_000
+const MAX_TOTAL_RETRY_MS = 48_000
+const RETRY_BASE_DELAY_MS = 1_400
+const RETRY_MAX_DELAY_MS = 6_500
+const MAX_ATTEMPTS_PRIMARY = 2
+const MAX_ATTEMPTS_FALLBACK = 3
 const PRIMARY_MODEL = 'gemini-4-hydrogen'
 const LITE_MODEL = 'gemini-3.1-flash-lite'
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -225,6 +228,12 @@ function isRetryableGeminiError(error) {
 function shouldSwitchModelImmediately(error) {
   const status = Number.isInteger(error?.status) ? error.status : undefined
   return status === 429 || status === 503 || status === 404
+}
+
+function computeBackoffWithJitter(attempt, baseMs = RETRY_BASE_DELAY_MS) {
+  const exponentialDelay = Math.min(RETRY_MAX_DELAY_MS, baseMs * 2 ** (attempt - 1))
+  const jitter = Math.floor(Math.random() * 450)
+  return exponentialDelay + jitter
 }
 
 function sleep(ms) {
@@ -520,7 +529,7 @@ async function callGeminiWithFallback(apiKey, models, contents, baseConfig, requ
     const model = models[i]
     const hasFallback = i < models.length - 1
     lastModel = model
-    const maxAttemptsOnModel = 2
+    const maxAttemptsOnModel = hasFallback ? MAX_ATTEMPTS_PRIMARY : MAX_ATTEMPTS_FALLBACK
 
     for (let attempt = 1; attempt <= maxAttemptsOnModel; attempt++) {
       try {
@@ -533,30 +542,47 @@ async function callGeminiWithFallback(apiKey, models, contents, baseConfig, requ
         const elapsedMs = Date.now() - startedAt
         const status = Number.isInteger(attemptError?.status) ? attemptError.status : undefined
 
-        // Immediately switch to the fallback model on rate-limit (429), demand spike (503), or 404
+        // Fail fast on non-retryable client/authentication errors (400, 401, 403)
+        if (!isRetryableGeminiError(attemptError) && status !== 404) {
+          attemptError.modelUsed = model
+          throw attemptError
+        }
+
+        // If the model is unsupported (404), switch immediately to fallback if available
+        if (status === 404) {
+          if (hasFallback) {
+            logDiagnostic('gemini_model_fallback', {
+              requestId,
+              action,
+              fromModel: model,
+              toModel: models[i + 1],
+              status,
+              elapsedMs,
+            })
+            break
+          }
+          attemptError.modelUsed = model
+          throw attemptError
+        }
+
+        // On rate-limit (429) or high demand (503) on the primary model, back off with jitter and switch to the fallback model
         if (hasFallback && shouldSwitchModelImmediately(attemptError)) {
+          const delayMs = computeBackoffWithJitter(1)
+          if (elapsedMs + delayMs >= MAX_TOTAL_RETRY_MS) {
+            attemptError.modelUsed = model
+            throw attemptError
+          }
           logDiagnostic('gemini_model_fallback', {
             requestId,
             action,
             fromModel: model,
             toModel: models[i + 1],
             status,
+            delayMs,
             elapsedMs,
           })
-          await sleep(300)
+          await sleep(delayMs)
           break
-        }
-
-        // For non-retryable client errors (400/401/403), fail fast without retrying or falling back
-        if (!isRetryableGeminiError(attemptError)) {
-          attemptError.modelUsed = model
-          throw attemptError
-        }
-
-        // If this was a 429/503 on the final model, don't storm it with sub-second retries
-        if (!hasFallback && (status === 429 || status === 503)) {
-          attemptError.modelUsed = model
-          throw attemptError
         }
 
         if (attempt >= maxAttemptsOnModel || elapsedMs >= MAX_TOTAL_RETRY_MS) {
@@ -576,7 +602,23 @@ async function callGeminiWithFallback(apiKey, models, contents, baseConfig, requ
           throw attemptError
         }
 
-        const delayMs = RETRY_BASE_DELAY_MS * attempt
+        const delayMs = computeBackoffWithJitter(attempt)
+        if (elapsedMs + delayMs >= MAX_TOTAL_RETRY_MS) {
+          if (hasFallback) {
+            logDiagnostic('gemini_model_fallback', {
+              requestId,
+              action,
+              fromModel: model,
+              toModel: models[i + 1],
+              status,
+              elapsedMs,
+            })
+            break
+          }
+          attemptError.modelUsed = model
+          throw attemptError
+        }
+
         logDiagnostic('gemini_transient_retry', {
           requestId,
           action,
@@ -603,8 +645,13 @@ export default async function handler(req, res) {
   const requestId = randomUUID()
   res.setHeader('X-Request-Id', requestId)
 
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Allow', 'POST, OPTIONS')
+    return res.status(204).end()
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST')
+    res.setHeader('Allow', 'POST, OPTIONS')
     return sendError(res, requestId, 405, 'Method not allowed.')
   }
 
@@ -615,12 +662,18 @@ export default async function handler(req, res) {
   }
 
   let body = req.body
+  if (Buffer.isBuffer(body)) {
+    body = body.toString('utf8')
+  }
   if (typeof body === 'string') {
     try {
       body = JSON.parse(body)
     } catch {
       return sendError(res, requestId, 400, 'Invalid JSON request body.')
     }
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return sendError(res, requestId, 400, 'Invalid JSON request body.')
   }
 
   const action = body?.action === 'validate' ? 'validate' : 'analyze'
@@ -734,15 +787,28 @@ export default async function handler(req, res) {
         res,
         requestId,
         429,
-        'Gemini is temporarily rate limited. Please wait a few moments and try again, or select a billing-enabled API key in Settings > Secrets if using a free-tier quota.',
+        'Gemini is temporarily rate limited. Please wait a few moments and retry—your uploaded image and details are preserved.',
       )
     }
     if (status === 503) {
-      return sendError(res, requestId, 503, 'Gemini is temporarily experiencing high demand. Please try again in a few moments.')
+      return sendError(
+        res,
+        requestId,
+        503,
+        'Gemini is temporarily experiencing high demand. Please retry in a few moments—your uploaded image and details are preserved.',
+      )
+    }
+    if (status === 500) {
+      return sendError(
+        res,
+        requestId,
+        502,
+        'Gemini encountered a temporary internal server error. Please retry in a few moments.',
+      )
     }
     if (status === 400) {
       if (/API_KEY_INVALID|API key not valid/i.test(rawMessage)) {
-        return sendError(res, requestId, 502, 'Gemini rejected the configured API key. Please check GEMINI_API_KEY.')
+        return sendError(res, requestId, 502, 'AI service authentication failed on the server. Please verify GEMINI_API_KEY.')
       }
       return sendError(res, requestId, 400, 'Gemini could not process this image request. Please try a different JPEG, PNG, or WebP photo.')
     }
@@ -750,12 +816,12 @@ export default async function handler(req, res) {
       return sendError(res, requestId, 502, 'The configured Gemini model is unavailable. Please contact the site administrator.')
     }
     if (status === 401 || status === 403) {
-      return sendError(res, requestId, 502, 'Gemini rejected the server configuration or permissions. Please check GEMINI_API_KEY.')
+      return sendError(res, requestId, 502, 'AI service authentication failed on the server. Please verify GEMINI_API_KEY.')
     }
-    if (timedOut) {
-      return sendError(res, requestId, 504, 'Gemini analysis timed out. Please try again.')
+    if (timedOut || status === 504) {
+      return sendError(res, requestId, 504, 'Gemini analysis timed out. Please retry—your uploaded image and details are preserved.')
     }
-    return sendError(res, requestId, 502, 'Gemini could not complete the skin assessment. Please try again.')
+    return sendError(res, requestId, 502, 'Gemini could not complete the skin assessment. Please retry.')
   }
 
   if (!response || typeof response !== 'object') {
