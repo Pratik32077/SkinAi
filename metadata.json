@@ -1,0 +1,6 @@
+{
+  "name": "DermaLens AI",
+  "description": "DermaLens AI provides preliminary, AI-assisted facial skin observations and general skincare suggestions to support dermatologist consultations.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
